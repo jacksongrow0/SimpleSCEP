@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/assets/social-card.png" alt="SimpleSCEP — Secure Cloud PKI and Certificate Automation" width="800">
+  <img src="public/assets/social-card.jpg" alt="SimpleSCEP — Secure Cloud PKI and Certificate Automation" width="800">
 </p>
 
 <h1 align="center">SimpleSCEP</h1>
