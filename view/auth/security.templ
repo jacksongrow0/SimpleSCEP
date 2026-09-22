@@ -1,0 +1,325 @@
+package auth
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"strconv"
+	"time"
+)
+
+// SecurityProps is everything the account settings dialog shows about the
+// acting user's second factor. There is no view of anyone else's, at any role:
+// an administrator who could reset a colleague's authenticator would be a way
+// around the requirement rather than a way to support it.
+type SecurityProps struct {
+	Authenticators []AuthenticatorView
+	// CanRemoveAuthenticator is false while only one is registered. The Remove
+	// button is then not rendered at all rather than rendered and refused — a
+	// control that never works teaches people to ignore refusals.
+	CanRemoveAuthenticator bool
+	RecoveryLeft           int
+	RecoveryTotal          int
+	RecoveryLow            bool
+	GraceMinutes           int
+	Passkeys               []PasskeyView
+	PasskeysAvailable      bool
+	// Enrolling is true while a registration is in progress, which swaps the
+	// "Add an authenticator" button for the QR and the code field.
+	Enrolling bool
+	// EnrollSecret is the base32 secret of that registration, grouped for
+	// transcription. It is shown behind a disclosure for the same reason the
+	// sign-in enrolment page shows it: a desktop-only authenticator, or a machine
+	// with no camera, cannot scan a QR, and the alternative is being unable to
+	// register a second device at all.
+	EnrollSecret string
+	// Error is what the last action wants to say about itself. It is rendered at
+	// the top of the panel because the panel is what the action swapped in, so
+	// there is no form left on screen to attach it to.
+	Error string
+}
+
+// AuthenticatorView is one registered TOTP credential as the panel shows it. It
+// carries neither the sealed secret nor the last accepted step: the first is the
+// factor itself, and the second means nothing to a reader.
+type AuthenticatorView struct {
+	ID         string
+	Label      string
+	AddedAt    time.Time
+	LastUsedAt *time.Time
+}
+
+// PasskeyView is one registered credential as the panel shows it. It carries no
+// key material — a WebAuthn public key is public, but there is still nothing
+// here a reader needs.
+type PasskeyView struct {
+	ID         string
+	Label      string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+}
+
+// SecurityPanel is the security section of the account settings dialog, fetched
+// when the dialog opens and swapped in place by every action inside it.
+//
+// It renders as a fragment rather than a page. These settings are the user's own
+// — not the organization's — so they live beside the rest of that person's
+// account rather than under a top-level organization nav item.
+//
+// The id is load-bearing: every action below targets it, and the handlers set
+// HX-Retarget to it so that a request re-fired after a step-up confirmation
+// lands here rather than over the whole document.
+templ SecurityPanel(props SecurityProps) {
+	<div id="security-panel" class="grid gap-4">
+		if props.Error != "" {
+			<p class="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+				{ props.Error }
+			</p>
+		}
+		@securityCard("Authenticator app", "shield",
+			"Required on every account. You'll be asked for a code when you sign in, and again before anything destructive.") {
+			<ul class="grid gap-2">
+				for _, app := range props.Authenticators {
+					<li class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3">
+						<div class="min-w-0">
+							<strong class="block truncate">{ app.Label }</strong>
+							@credentialDates(app.AddedAt, app.LastUsedAt)
+						</div>
+						if props.CanRemoveAuthenticator {
+							<form
+								method="post"
+								action={ templ.SafeURL("/security/totp/" + app.ID + "/delete") }
+								hx-post={ "/security/totp/" + app.ID + "/delete" }
+								hx-target="#security-panel"
+								hx-swap="outerHTML"
+							>
+								@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+									Remove
+								}
+							</form>
+						} else {
+							@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+								Only authenticator
+							}
+						}
+					</li>
+				}
+			</ul>
+			if props.Enrolling {
+				@totpEnrollment(props.EnrollSecret)
+			} else {
+				<form
+					method="post"
+					action="/security/totp/begin"
+					hx-post="/security/totp/begin"
+					hx-target="#security-panel"
+					hx-swap="outerHTML"
+					class="mt-3"
+				>
+					@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+						@c.Icon("plus")
+						Add an authenticator
+					}
+				</form>
+				<p class="mt-2 text-sm text-muted-foreground">
+					Confirming with a code authorises destructive actions for the next { strconv.Itoa(props.GraceMinutes) } minutes, so a run of related changes costs one code rather than one each.
+				</p>
+			}
+		}
+		@securityCard("Recovery codes", "key",
+			"Issued once, when you first set up an authenticator. The only way back in if you lose every device you've registered.") {
+			<div class="flex flex-wrap items-center gap-3">
+				@c.Pill(c.PillProps{Tone: recoveryTone(props.RecoveryLow)}) {
+					{ strconv.Itoa(props.RecoveryLeft) } of { strconv.Itoa(props.RecoveryTotal) } left
+				}
+				if props.RecoveryLow {
+					<span class="text-sm text-muted-foreground">Register a second authenticator while you still can.</span>
+				}
+			</div>
+			// Deliberately no regenerate control. A set issued twice is a set the
+			// user has twice been told to write down, and the second telling is the
+			// one that gets ignored; a spare authenticator is the better answer to
+			// a dwindling pile of one-time codes.
+			<p class="mt-3 text-sm text-muted-foreground">
+				Each code works once and they are shown only at setup. Redeeming one signs you out everywhere and asks you to register a new authenticator on the spot.
+			</p>
+		}
+		@securityCard("Passkeys", "fingerprint",
+			"Optional. A passkey can stand in for your authenticator code when you sign in, and cannot be phished.") {
+			if !props.PasskeysAvailable {
+				<p class="text-sm text-muted-foreground">Passkeys are not available on this deployment.</p>
+			} else {
+				if len(props.Passkeys) == 0 {
+					@c.EmptyState(c.EmptyStateProps{
+						Title:       "No passkeys registered",
+						Description: "You'll still be asked for your authenticator code. Registering a passkey gives you a faster, phishing-resistant alternative.",
+						Icon:        "fingerprint",
+						Compact:     true,
+					})
+				} else {
+					<ul class="grid gap-2">
+						for _, key := range props.Passkeys {
+							<li class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3">
+								<div class="min-w-0">
+									<strong class="block truncate">{ key.Label }</strong>
+									@credentialDates(key.CreatedAt, key.LastUsedAt)
+								</div>
+								<form
+									method="post"
+									action={ templ.SafeURL("/security/passkeys/" + key.ID + "/delete") }
+									hx-post={ "/security/passkeys/" + key.ID + "/delete" }
+									hx-target="#security-panel"
+									hx-swap="outerHTML"
+								>
+									@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+										Remove
+									}
+								</form>
+							</li>
+						}
+					</ul>
+				}
+				<div class="mt-4 grid gap-2 sm:max-w-sm">
+					@c.Field(c.FieldProps{Label: "Name this passkey", Hint: "So you can tell your devices apart later."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{
+							"id": "passkey-label", "maxlength": "64", "placeholder": "Work laptop",
+						}})
+					}
+					// Hidden until mfa.js confirms the browser supports WebAuthn.
+					@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{
+						"type": "button", "hidden": true,
+						"data-passkey-register": true,
+						"data-passkey-label":    "passkey-label",
+						"data-passkey-result":   "passkey-register-result",
+					}}) {
+						@c.Icon("plus")
+						Register a passkey
+					}
+					// Shown by mfa.js in place of the button when the browser has no
+					// WebAuthn API — which includes every page served over plain HTTP
+					// to something other than localhost, because the API is gated on a
+					// secure context. Hiding the control and saying nothing looks
+					// identical to the feature having been forgotten.
+					<p data-passkey-unsupported class="text-sm text-muted-foreground" hidden>
+						This browser cannot create passkeys. They need a secure connection (HTTPS) and a device with a screen lock, a fingerprint reader, or a security key.
+					</p>
+					<p id="passkey-register-result" class="text-sm text-destructive" aria-live="polite"></p>
+				</div>
+			}
+		}
+	</div>
+}
+
+// totpEnrollment is the registration in progress: the QR for the parked secret,
+// the typed fallback for a device that cannot scan it, and the code that proves
+// the authenticator holds it.
+templ totpEnrollment(secret string) {
+	<div class="mt-3 grid gap-4 rounded-md border border-border bg-muted/40 p-4">
+		<div class="grid justify-items-center gap-3">
+			// Its own request rather than a data: URI, so the QR does not have to be
+			// re-encoded into every render of this panel and the response carrying
+			// the secret can be marked no-store on its own.
+			<img
+				src="/security/totp/qr.png"
+				alt="QR code for your authenticator app"
+				width="180"
+				height="180"
+				class="rounded-lg bg-white p-2"
+			/>
+			<p class="m-0 text-sm text-muted-foreground">Scan this with your authenticator app, then enter the code it shows.</p>
+		</div>
+		<details class="text-sm text-muted-foreground [&_summary]:cursor-pointer [&_summary]:text-primary">
+			<summary>Can't scan the code?</summary>
+			<p class="mt-2">Enter this key in your authenticator instead:</p>
+			<code class="mt-1 block break-all rounded-md border border-border bg-muted p-2 font-mono tracking-wider">{ secret }</code>
+		</details>
+		<form
+			id="totp-add-form"
+			method="post"
+			action="/security/totp/confirm"
+			hx-post="/security/totp/confirm"
+			hx-target="#security-panel"
+			hx-swap="outerHTML"
+			class="grid gap-3"
+		>
+			@c.Field(c.FieldProps{Label: "Name this authenticator", Hint: "So you can tell your devices apart later."}) {
+				@c.Input(c.InputProps{Attrs: templ.Attributes{
+					"name": "label", "maxlength": "64", "placeholder": "Personal phone",
+				}})
+			}
+			@c.Field(c.FieldProps{Label: "6-digit code"}) {
+				@c.Input(c.InputProps{Attrs: codeAttrs("one-time-code", nil)})
+			}
+			<div class="flex flex-wrap gap-2">
+				@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+					Confirm and add
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Size: c.ButtonSmall, Attrs: templ.Attributes{
+					"type": "submit", "formaction": "/security/totp/cancel",
+					"hx-post": "/security/totp/cancel", "hx-target": "#security-panel", "hx-swap": "outerHTML",
+				}}) {
+					Cancel
+				}
+			</div>
+		</form>
+	</div>
+}
+
+// credentialDates renders the "added / last used" line both lists carry.
+//
+// It is its own template because templ only recognises an `@component` call
+// where a node may begin, not partway through a run of text. Written inline as
+// `Added @c.LocalTime(...)` — which is how both lists here started life, copied
+// from the page this panel replaced — the call is emitted as literal text, and
+// the reader sees the Go source of the template. Nothing fails: the generated
+// code compiles and the page renders, it just renders the wrong thing. Keeping
+// every call at the start of a line is the rule that avoids it.
+templ credentialDates(added time.Time, lastUsed *time.Time) {
+	// The literal strings carry their own spaces. templ trims the whitespace
+	// around a text node that sits on its own line, so bare words here render
+	// flush against the timestamps beside them.
+	<span class="text-sm text-muted-foreground">
+		{ "Added " }
+		@c.LocalTime(added, "date")
+		{ " · last used " }
+		@c.LocalTimeOr(lastUsed, "date", "never")
+	</span>
+}
+
+// securityCard is the shape each section of the panel takes. It exists so the
+// three read as one list rather than as three slightly different boxes.
+templ securityCard(title, icon, description string) {
+	@c.Card(c.CardProps{}) {
+		@c.CardHeader(c.CardHeaderProps{Title: title, Description: description, Icon: icon})
+		@c.CardBody(nil) {
+			{ children... }
+		}
+	}
+}
+
+func recoveryTone(low bool) c.Tone {
+	if low {
+		return c.ToneWarning
+	}
+	return c.ToneNeutral
+}
+
+// SecurityLocked is what the Security tab shows before the person has proved a
+// second factor, drawn in the same place the panel itself will appear.
+//
+// It used to be a second dialog. Opening the tab raised the standalone step-up
+// prompt on top of the account settings dialog already on screen, so the answer
+// to "let me look at my security settings" was two stacked modals — and the one
+// underneath, which explained what was being asked for, was covered by the one
+// asking. Confirming here leaves the person in the dialog they opened, and the
+// unlocked panel replaces this fragment in place.
+//
+// The id matches SecurityPanel's so both are the same swap target: whichever of
+// the two is on screen, an action that answers with the other one lands in the
+// right place.
+templ SecurityLocked(props StepUpProps) {
+	<div id="security-panel" class="grid gap-4">
+		@securityCard("Confirm it's you", "lock",
+			"Your security settings can add or remove the ways you sign in, so they ask for a second factor before they open.") {
+			@StepUpMethods(props)
+		}
+	</div>
+}

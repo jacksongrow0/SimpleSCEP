@@ -1,0 +1,634 @@
+package pki
+
+import (
+	"fmt"
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/home"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strings"
+)
+
+type CA struct {
+	// KMSKeyVersion is deliberately absent. See caViews in internal/pki/handler.go.
+	ID, Name, Type, Status, Algorithm, Subject, Issuer, Serial, NotBefore, NotAfter, ExportPosture, IssuanceEKUs string
+	IssuedCount                                                                                                  int64
+}
+
+templ CertificateAuthorities(session auth.Session, cas []CA, hasRoot bool, keyProvider string, canImport bool, supportsHSM bool) {
+	@layout.App("Certificate Authorities", "cas", pkiShellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Root Certificate Authority", Description: "The trust anchor every certificate in your organization chains back to. Install it on your devices so issued certificates are trusted."})
+				@c.CardBody(nil) {
+					if hasRoot {
+						for _, ca := range cas {
+							if ca.Type == "root" {
+								@CARow(ca, false, session)
+							}
+						}
+					} else {
+						@c.EmptyState(c.EmptyStateProps{Icon: "shield-plus", Title: "No Root CA configured", Description: rootEmptyDescription(keyProvider, canImport), Compact: true, Muted: true}) {
+							<div class="button-row mt-5 flex items-center justify-center gap-2 max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full">
+								if session.IsAdmin() {
+									@home.CreateAction("Configure Root CA", "root-dialog")
+								}
+								if session.CanManageCertificates() && canImport {
+									@rootImportAction(session)
+								}
+							</div>
+							if !session.IsAdmin() && session.CanManageCertificates() {
+								<p class="mt-3 text-sm text-muted-foreground">{ rootEmptyManagerCopy(canImport) }</p>
+							}
+							<p class="mt-3 text-sm text-muted-foreground">
+								<a href={ templ.SafeURL(layout.DocsCertificateAuthoritiesURL) } target="_blank" rel="noopener" class="underline underline-offset-2">Read the certificate authorities guide</a>
+							</p>
+						}
+					}
+				}
+			}
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Issuing Certificate Authorities", Description: issuingCACopy(session, cas), Responsive: true}) {
+					if session.CanManageCertificates() {
+						<div class="button-row flex items-center gap-2 max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full">
+							if canImport {
+								@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities/import?type=issuing", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+									@c.Icon("upload")
+									<span>Import issuing CA</span>
+								}
+							}
+							@IssuingCAAction(session, cas, "New Issuing CA", "new-issuing-ca-tooltip", "")
+						</div>
+					}
+				}
+				@c.CardBody(nil) {
+					if !hasIssuing(cas) {
+						@c.EmptyState(c.EmptyStateProps{Icon: "shield-check", Title: "No issuing CAs yet", Description: issuingCAEmptyCopy(session)}) {
+							if session.CanManageCertificates() {
+								@IssuingCAAction(session, cas, "Create issuing CA", "create-issuing-ca-tooltip", "mt-5")
+							}
+						}
+					} else {
+						for _, ca := range cas {
+							if ca.Type == "issuing" {
+								@CARow(ca, true, session)
+							}
+						}
+					}
+				}
+			}
+		</div>
+		@CAForm("ca-dialog", "Create an Issuing CA", "issuing", cas, keyProvider, supportsHSM)
+		if session.IsAdmin() {
+			@CAForm("root-dialog", "Configure your Root CA", "root", cas, keyProvider, supportsHSM)
+		}
+	}
+}
+
+// FormError is swapped into a dialog's result target when a create request
+// fails validation.
+templ FormError(message string) {
+	<span class="text-destructive">{ message }</span>
+}
+
+// IssuingCAAction offers the create action, or a disabled button explaining
+// why it cannot be taken.
+templ IssuingCAAction(session auth.Session, cas []CA, label string, tooltipID string, class string) {
+	if !hasActiveRoot(cas) {
+		@blockedIssuingCAAction(label, tooltipID, class, "Create a Root CA first")
+	} else {
+		@home.CreateAction(label, "ca-dialog")
+	}
+}
+
+templ blockedIssuingCAAction(label string, tooltipID string, class string, reason string) {
+	@c.Tooltip(c.TooltipProps{ID: tooltipID, Content: reason, Position: c.TooltipAbove, Attrs: templ.Attributes{"class": class}}) {
+		// pointer-events-none lets the wrapper span receive the hover a
+		// disabled button would otherwise swallow, so the tooltip shows.
+		@c.Button(c.ButtonProps{Attrs: templ.Attributes{"disabled": true, "class": "pointer-events-none", "aria-describedby": tooltipID}}) {
+			@c.Icon("plus")
+			<span>{ label }</span>
+		}
+	}
+}
+
+templ CARow(ca CA, actions bool, session auth.Session) {
+	<div class="protocol flex items-start justify-between gap-4 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&_h4]:m-0 [&_h4]:text-sm [&_h4]:font-bold [&_p]:mt-1 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground ca-row cursor-pointer transition-[background-color,border-color] duration-150 hover:border-[color-mix(in_oklch,var(--color-primary)_45%,var(--color-border))] hover:bg-[color-mix(in_oklch,var(--color-primary)_6%,var(--color-muted))] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary" role="button" tabindex="0" data-dialog={ "ca-details-" + ca.ID } data-script="on click call document.getElementById(my @data-dialog).showModal() end on keydown[key is 'Enter' or key is ' '] trigger click on me">
+		<div class="flex items-center gap-4">
+			<div class="channel-icon grid size-10 place-items-center rounded-lg bg-[color-mix(in_oklch,var(--color-primary)_15%,transparent)] text-primary">
+				@c.Icon("lock")
+			</div>
+			<div><h4>{ ca.Name }</h4><p>{ ca.Algorithm } · Expires { ca.NotAfter } · { fmt.Sprint(ca.IssuedCount) } issued</p></div>
+		</div>
+		<div class="button-row flex items-center gap-2 max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full">
+			if ca.ExportPosture == "imported_hsm" || ca.ExportPosture == "imported_software" {
+				@c.Pill(c.PillProps{}) {
+					Imported
+				}
+			}
+			if ca.ExportPosture == "non_exportable_software" || ca.ExportPosture == "imported_software" {
+				@c.Pill(c.PillProps{Tone: c.ToneWarning}) {
+					Software key
+				}
+			}
+			@c.Pill(c.PillProps{Tone: statusTone(ca.Status)}) {
+				{ ca.Status }
+			}
+			if actions && session.CanManageCertificates() {
+				<span class="row-chevron grid place-items-center text-muted-foreground">
+					@c.Icon("chevron-right")
+				</span>
+			}
+		</div>
+	</div>
+	// Wider than the default dialog: the action row carries delete, up to two
+	// status changes, rotate, close, and download, and the two-column detail
+	// grid reads badly at 32rem.
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "ca-details-" + ca.ID, "style": "--dialog-w:44rem"}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: ca.Name, Description: "Certificate Authority details"})
+		@c.DialogBody(templ.Attributes{"class": "grid gap-4 two grid-cols-2 max-md:grid-cols-1"}) {
+			@c.Info("Type", ca.Type)
+			@c.Info("Status", ca.Status)
+			@c.Info("Algorithm", ca.Algorithm)
+			@c.Info("Serial", ca.Serial)
+			@c.Info("Issued", ca.NotBefore)
+			@c.Info("Expires", ca.NotAfter)
+			@c.Info("Issued certificates", fmt.Sprint(ca.IssuedCount))
+			<div class="col-span-full">
+				@c.Info("Subject", ca.Subject)
+			</div>
+			<div class="col-span-full">
+				@c.Info("Issuer", ca.Issuer)
+			</div>
+			if ca.IssuanceEKUs != "" {
+				<div class="col-span-full">
+					@c.InfoSlot("Extended key usages") {
+						<span class="flex flex-wrap gap-1.5">
+							for _, label := range ekuLabels(ca.IssuanceEKUs) {
+								@c.Pill(c.PillProps{}) {
+									{ label }
+								}
+							}
+						</span>
+					}
+				</div>
+			}
+			if ca.Type == "issuing" && session.CanManageCertificates() && ca.Status != "retired" {
+				<p class="col-span-full text-sm text-muted-foreground">Rotating creates a replacement CA with the same subject, algorithm, and usages on a fresh key, then retires this one. Retired CAs stop issuing and cannot be reactivated.</p>
+			}
+		}
+		@c.DialogActions(nil) {
+			<div class="flex w-full flex-wrap items-center gap-3">
+				if session.CanManageCertificates() {
+					<div class="flex flex-wrap items-center gap-2 max-md:w-full max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full [&>form]:max-md:w-full [&>form>.btn]:max-md:w-full">
+						@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close() then call document.getElementById('ca-delete-" + ca.ID + "').showModal()"}}) {
+							@c.Icon("trash-2")
+							<span>Delete CA</span>
+						}
+						if ca.Status == "active" {
+							@statusForm(ca.ID, "inactive", "Deactivate")
+						}
+						if ca.Status == "inactive" {
+							@statusForm(ca.ID, "active", "Reactivate")
+							@statusForm(ca.ID, "retired", "Retire")
+						}
+						if ca.Type == "issuing" && ca.Status == "active" {
+							<form method="post" action={ templ.SafeURL("/certificate-authorities/" + ca.ID + "/rotate") } hx-post={ "/certificate-authorities/" + ca.ID + "/rotate" }>
+								@c.Button(c.ButtonProps{Variant: c.ButtonOutline}) {
+									@c.Icon("refresh-cw")
+									<span>Rotate</span>
+								}
+							</form>
+						}
+					</div>
+				}
+				<div class="ml-auto flex flex-wrap items-center justify-end gap-2 max-md:w-full max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full [&>form]:max-md:w-full [&>form>.btn]:max-md:w-full">
+					@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+						Close
+					}
+					<form method="get" action={ templ.SafeURL("/certificate-authorities/" + ca.ID + "/download") } class="flex items-center max-md:w-full">
+						<div class="w-28 shrink-0 max-md:w-auto max-md:grow">
+							@c.Select(templ.Attributes{"name": "format", "class": "h-9 rounded-r-none border-r-0 px-2 text-sm", "aria-label": "Certificate format"}) {
+								<option value="pem">PEM (.pem)</option>
+								<option value="crt">CRT (.crt)</option>
+								<option value="cer">CER, DER (.cer)</option>
+							}
+						</div>
+						@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{"type": "submit", "class": "shrink-0 rounded-l-none max-md:grow"}}) {
+							@c.Icon("download")
+							<span>Download certificate</span>
+						}
+					</form>
+					@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities/" + ca.ID + "/attestation", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+						@c.Icon("download")
+						<span>Download attestation</span>
+					}
+				</div>
+			</div>
+		}
+	}
+	if session.CanManageCertificates() {
+		@CADeleteDialog(ca)
+	}
+}
+
+// CADeleteDialog gates CA deletion behind a typed confirmation, on top of the
+// step-up prompt POST /certificate-authorities/{id}/delete already carries.
+// Deleting a CA destroys its KMS key immediately and permanently — unlike
+// deactivating or retiring, there is no way back from this one, so it gets a
+// harder confirmation than either: the administrator must read what breaks and
+// type the CA's name before the destructive request goes out at all.
+//
+// The confirmed name travels as a query parameter on a hand-built htmx.ajax
+// call rather than as a POST body field on a normal form. A step-up refusal is
+// retried by the account dialog against the exact URL the first attempt used —
+// see promptStepUp in internal/middleware/stepup.go — but carries none of that
+// first attempt's body, so a body field would silently vanish the moment a
+// second factor was actually required, and the retry would be refused for a
+// confirmation the administrator already gave. The query string is the one
+// part of the request stepUpPatterns' retry preserves.
+templ CADeleteDialog(ca CA) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "ca-delete-" + ca.ID}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: "Delete " + ca.Name, Description: "This destroys its signing key immediately. There is no undo."})
+		@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+			if ca.IssuedCount > 0 {
+				<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+					<span>
+						@c.Icon("circle-alert")
+					</span>
+					<div class="text-sm">
+						<strong>This CA has issued { fmt.Sprint(ca.IssuedCount) } certificate(s).</strong>
+						They stay valid until they expire, but once the key is destroyed this CA can never revoke them or answer an OCSP or CRL check for them again.
+					</div>
+				</div>
+			}
+			<div class="grid gap-2 text-sm">
+				<strong class="font-medium">What happens</strong>
+				<ul class="m-0 grid list-disc gap-1.5 pl-5 text-muted-foreground">
+					<li><strong class="text-foreground">The signing key is destroyed immediately and permanently.</strong> There is no backup and no recovery window.</li>
+					<li><strong class="text-foreground">This CA can never sign anything again</strong> — no certificates, no CRLs, no OCSP responses.</li>
+					if ca.Type == "root" {
+						<li>Any issuing CA still chained under this root must be deleted first — the server refuses this request otherwise.</li>
+					}
+					<li>Any SCEP, EST, or ACME endpoint still bound to this CA must be disabled or rebound first — the server refuses this request otherwise.</li>
+				</ul>
+			</div>
+			@c.Field(c.FieldProps{Label: "Type the CA name to confirm", Hint: "Enter " + ca.Name + " exactly."}) {
+				@c.Input(c.InputProps{Attrs: templ.Attributes{
+					"id":           "ca-delete-confirm-" + ca.ID,
+					"name":         "confirm_name",
+					"required":     true,
+					"autocomplete": "off",
+					"placeholder":  ca.Name,
+					"data-expect":  ca.Name,
+					"data-script":  "on input if my value is my @data-expect then remove @disabled from #ca-delete-submit-" + ca.ID + " else add @disabled to #ca-delete-submit-" + ca.ID + " end",
+				}})
+			}
+			<p id={ "ca-delete-" + ca.ID + "-error" } class="m-0 text-sm text-destructive"></p>
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Cancel
+			}
+			@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Attrs: templ.Attributes{
+				"type":        "button",
+				"id":          "ca-delete-submit-" + ca.ID,
+				"disabled":    true,
+				"data-script": "on click call htmx.ajax('POST', '/certificate-authorities/" + ca.ID + "/delete?confirm_name=' + encodeURIComponent(#ca-delete-confirm-" + ca.ID + ".value), {target: '#ca-delete-" + ca.ID + "-error', swap: 'innerHTML', source: me})",
+			}}) {
+				@c.Icon("trash-2")
+				<span>Delete permanently</span>
+			}
+		}
+	}
+}
+
+templ statusForm(id string, status string, label string) {
+	<form method="post" action={ templ.SafeURL("/certificate-authorities/" + id + "/status") }>
+		<input type="hidden" name="status" value={ status }/>
+		@c.Button(c.ButtonProps{Variant: c.ButtonOutline}) {
+			{ label }
+		}
+	</form>
+}
+
+templ CAForm(id string, title string, caType string, cas []CA, keyProvider string, supportsHSM bool) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": id}}) {
+		<form method="post" action="/certificate-authorities" hx-post="/certificate-authorities" hx-target={ "#" + id + "-result" }>
+			<input type="hidden" name="type" value={ caType }/>
+			@c.DialogHeader(c.DialogHeaderProps{Title: title, Description: caFormCopy(caType, keyProvider)})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "CA name"}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "128", "placeholder": "Acme Devices Issuing CA"}})
+				}
+				@SubjectFields()
+				<div class="grid gap-4 two grid-cols-2 max-md:grid-cols-1">
+					@AlgorithmSelect()
+					@ProtectionSelect(supportsHSM)
+					@c.Field(c.FieldProps{Label: "Validity (years)"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "years", "type": "number", "required": true, "min": "1", "max": "30", "value": defaultYears(caType)}})
+					}
+				</div>
+				if caType == "root" {
+					@c.Field(c.FieldProps{Label: "Path length (max subordinate CA depth)"}) {
+						@c.Select(templ.Attributes{"name": "path_len", "required": true}) {
+							<option value="0">0 — no subordinate CAs</option>
+							<option value="1" selected>1</option>
+							<option value="2">2</option>
+							<option value="3">3</option>
+							<option value="4">4</option>
+						}
+					}
+				}
+				if caType == "issuing" {
+					@c.Field(c.FieldProps{Label: "Parent Root CA"}) {
+						@c.Select(templ.Attributes{"name": "parent_id", "required": true}) {
+							for _, ca := range cas {
+								if ca.Type == "root" && ca.Status == "active" {
+									<option value={ ca.ID }>{ ca.Name }</option>
+								}
+							}
+						}
+					}
+				}
+				if caType == "issuing" {
+					@EKUFields(rootEKUTokens(cas))
+				} else {
+					@EKUFields(nil)
+				}
+				<p id={ id + "-result" } class="muted text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Create CA
+				}
+			}
+		</form>
+	}
+}
+
+templ SubjectFields() {
+	@c.Field(c.FieldProps{Label: "Common name (CN)"}) {
+		@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "cn", "required": true, "maxlength": "128", "placeholder": "Acme Issuing CA"}})
+	}
+	<div class="grid gap-4 two grid-cols-2 max-md:grid-cols-1">
+		@c.Field(c.FieldProps{Label: "Organization (O)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "o", "required": true, "maxlength": "128", "placeholder": "Acme Inc"}})
+		}
+		@c.Field(c.FieldProps{Label: "Organizational unit (OU)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "ou", "maxlength": "128", "placeholder": "IT"}})
+		}
+		@c.Field(c.FieldProps{Label: "Country (C)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "c", "required": true, "minlength": "2", "maxlength": "2", "pattern": "[A-Za-z]{2}", "title": "Two-letter country code", "placeholder": "US"}})
+		}
+		@c.Field(c.FieldProps{Label: "State / Province (ST)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "st", "required": true, "maxlength": "128", "placeholder": "California"}})
+		}
+		@c.Field(c.FieldProps{Label: "Locality (L)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "l", "maxlength": "128", "placeholder": "San Francisco"}})
+		}
+	</div>
+}
+
+// EKUFields renders the EKU selection. A nil allowed set (root forms) offers
+// every named usage plus free-text custom OIDs; a non-nil set (issuing form)
+// offers only the parent root CA's usages and no free-text input, so an
+// issuing CA can never request an EKU its root does not have.
+templ EKUFields(allowed []string) {
+	<fieldset class="grid gap-2">
+		<legend class="text-sm font-medium">Extended Key Usages (EKU)</legend>
+		<p class="text-sm text-muted-foreground">To prevent potential security risks, each certificate authority is constrained to specific purposes of use. For issuing CAs, options are limited to those selected by the root CA.</p>
+		<div class="grid gap-2 two grid-cols-2 max-md:grid-cols-1">
+			for _, opt := range ekuChoices(allowed) {
+				<label class="flex items-center gap-2 text-sm">
+					if opt.Checked {
+						<input type="checkbox" name="eku" value={ opt.Token } checked/>
+					} else {
+						<input type="checkbox" name="eku" value={ opt.Token }/>
+					}
+					{ opt.Label }
+				</label>
+			}
+		</div>
+		if allowed == nil {
+			@c.Field(c.FieldProps{Label: "Custom EKU OIDs (comma-separated)"}) {
+				@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "custom_eku", "pattern": `\s*\d+(?:\.\d+)+(?:\s*,\s*\d+(?:\.\d+)+)*\s*`, "title": "Comma-separated dotted OIDs", "placeholder": "e.g. 1.3.6.1.4.1.311.20.2.2, 1.2.840.113635.100.4.10"}})
+			}
+		}
+	</fieldset>
+}
+
+templ AlgorithmSelect() {
+	@c.Field(c.FieldProps{Label: "Key algorithm"}) {
+		@c.Select(templ.Attributes{"name": "algorithm", "required": true}) {
+			<option value="EC_SIGN_P256_SHA256" selected>ECDSA P-256 (recommended)</option>
+			<option value="EC_SIGN_P384_SHA384">ECDSA P-384</option>
+			<option value="RSA_SIGN_PKCS1_3072_SHA256">RSA 3072</option>
+			<option value="RSA_SIGN_PKCS1_4096_SHA256">RSA 4096</option>
+		}
+	}
+}
+
+templ ProtectionSelect(supportsHSM bool) {
+	@c.Field(c.FieldProps{Label: "Key protection", Hint: protectionHint(supportsHSM)}) {
+		@c.Select(templ.Attributes{"name": "protection", "required": true}) {
+			if supportsHSM {
+				<option value="hsm" selected>Hardware security module (recommended)</option>
+				<option value="software">Software-protected key</option>
+			} else {
+				<option value="software" selected>Software-protected key</option>
+			}
+		}
+	}
+}
+
+func protectionHint(supportsHSM bool) string {
+	if supportsHSM {
+		return "Choose independently for this CA. HSM keys offer stronger isolation; software keys cost less."
+	}
+	return "The deprecated local provider only creates disposable in-memory software keys."
+}
+
+type ekuChoice struct {
+	Token, Label string
+	Checked      bool
+}
+
+// namedEKUOptions is the full catalog offered when creating a root CA; tokens
+// match the pki package constants.
+var namedEKUOptions = []ekuChoice{
+	{Token: "client_auth", Label: "Client auth"},
+	{Token: "server_auth", Label: "Server auth"},
+	{Token: "code_signing", Label: "Code signing"},
+	{Token: "email_protection", Label: "Email protection (S/MIME)"},
+	{Token: "ipsec_end_system", Label: "IPSEC end system"},
+	{Token: "ipsec_tunnel", Label: "IPSEC tunnel"},
+	{Token: "ipsec_user", Label: "IPSEC user"},
+	{Token: "time_stamping", Label: "Time stamping"},
+	{Token: "ocsp_signing", Label: "OCSP signing"},
+	{Token: "smartcard_logon", Label: "Smartcard logon"},
+	{Token: "mac_address", Label: "Mac address"},
+}
+
+// ekuChoices resolves the checkboxes to render: the full catalog when allowed
+// is nil, otherwise only allowed tokens — named ones with their labels, the
+// rest (custom OIDs) labeled by the OID itself.
+func ekuChoices(allowed []string) []ekuChoice {
+	var out []ekuChoice
+	if allowed == nil {
+		out = append(out, namedEKUOptions...)
+	} else {
+		named := map[string]string{}
+		for _, opt := range namedEKUOptions {
+			named[opt.Token] = opt.Label
+		}
+		for _, token := range allowed {
+			label, ok := named[token]
+			if !ok {
+				label = token
+			}
+			out = append(out, ekuChoice{Token: token, Label: label})
+		}
+	}
+	for i := range out {
+		if out[i].Token == "client_auth" {
+			out[i].Checked = true
+			return out
+		}
+	}
+	if len(out) > 0 {
+		out[0].Checked = true
+	}
+	return out
+}
+
+// ekuLabels resolves a CA's stored comma-separated EKU tokens to the friendly
+// labels used in namedEKUOptions, for display; a token with no match (a
+// custom OID) falls back to the raw token.
+func ekuLabels(csv string) []string {
+	named := map[string]string{}
+	for _, opt := range namedEKUOptions {
+		named[opt.Token] = opt.Label
+	}
+	var out []string
+	for token := range strings.SplitSeq(csv, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if label, ok := named[token]; ok {
+			out = append(out, label)
+		} else {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
+// rootEKUTokens returns the active root CA's EKU profile; never nil, so the
+// issuing form always renders a constrained set (empty when no root exists).
+func rootEKUTokens(cas []CA) []string {
+	tokens := []string{}
+	for _, ca := range cas {
+		if ca.Type != "root" || ca.Status != "active" {
+			continue
+		}
+		for t := range strings.SplitSeq(ca.IssuanceEKUs, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				tokens = append(tokens, t)
+			}
+		}
+		return tokens
+	}
+	return tokens
+}
+
+func defaultYears(caType string) string {
+	if caType == "root" {
+		return "10"
+	}
+	return "5"
+}
+func hasIssuing(cas []CA) bool {
+	for _, ca := range cas {
+		if ca.Type == "issuing" {
+			return true
+		}
+	}
+	return false
+}
+func statusTone(status string) c.Tone {
+	switch status {
+	case "active":
+		return c.ToneSuccess
+	case "inactive":
+		return c.ToneWarning
+	default:
+		return c.ToneNeutral
+	}
+}
+func hasActiveRoot(cas []CA) bool {
+	for _, ca := range cas {
+		if ca.Type == "root" && ca.Status == "active" {
+			return true
+		}
+	}
+	return false
+}
+func caFormCopy(caType string, keyProvider string) string {
+	if caType == "root" {
+		return "Create a dedicated trust anchor for this organization. Key provider: " + keyProvider + "."
+	}
+	return "A new authority chained under your managed root. Key provider: " + keyProvider + "."
+}
+func issuingCACopy(session auth.Session, cas []CA) string {
+	used := 0
+	for _, ca := range cas {
+		if ca.Type == "issuing" && (ca.Status == "active" || ca.Status == "inactive") {
+			used++
+		}
+	}
+	return fmt.Sprintf("%d issuing CAs configured", used)
+}
+
+func issuingCAEmptyCopy(session auth.Session) string {
+	return "An issuing CA signs every server, client, and SCEP certificate you hand out. Create one to get started."
+}
+
+// rootImportAction offers the root import.
+//
+// It renders next to "Configure Root CA" because the two are the same decision
+// made two ways. It used to be the "Import your own CA" button in the issuing
+// card below — the one place on the page that could not be about a root, so the
+// only way to import a trust anchor was to open a form headed "Issuing
+// Certificate Authorities" and change a dropdown.
+templ rootImportAction(session auth.Session) {
+	@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities/import?type=root", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+		@c.Icon("upload")
+		<span>Import existing root CA</span>
+	}
+}
+
+// rootEmptyManagerCopy tells a certificate manager who cannot create the root
+// what happens next. Creating one is an administrator's decision; importing one
+// is not restricted that way, so the copy offers it too.
+func rootEmptyDescription(keyProvider string, canImport bool) string {
+	if canImport {
+		return "Create a dedicated trust anchor with " + keyProvider + ", or import the root you already run. Root CAs are never shared between organizations."
+	}
+	return "Create a dedicated trust anchor with " + keyProvider + ". Root CAs are never shared between organizations."
+}
+
+func rootEmptyManagerCopy(canImport bool) string {
+	if canImport {
+		return "An administrator must create the Root CA before issuing CAs can be created — or you can import the root you already run."
+	}
+	return "An administrator must create the Root CA before issuing CAs can be created."
+}
+
+func pkiShellSession(s auth.Session) layout.Session {
+	return layout.Session{UserID: s.UserID, Name: s.Name, Role: s.Role, OrganizationName: s.OrganizationName}
+}

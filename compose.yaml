@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: development-admin-only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d simplescep"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/10-simplescep.sql:ro
+
+  simplescep:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      POSTGRES_DB: simplescep
+      POSTGRES_USER: simplescep
+      POSTGRES_PASSWORD: simplescep-development-only
+      POSTGRES_HOST: postgres:5432
+      POSTGRES_SSL: disable
+      AUTH_SECRET: local-development-secret-change-me
+      APP_URL: http://localhost:8080
+      TRUSTED_PROXY_CIDRS: none
+      KEY_PROVIDER: local
+
+# This stack is deliberately disposable. PostgreSQL uses tmpfs because local
+# key provider loses CA keys and encrypted MFA material whenever the app is
+# recreated. Restart with `docker compose down && docker compose up --build`.

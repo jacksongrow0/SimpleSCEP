@@ -1,0 +1,529 @@
+package home
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strconv"
+	"time"
+)
+
+// ACMEEndpointRow is one endpoint on the list page.
+type ACMEEndpointRow struct {
+	ID, Name, CAName, Path string
+	Enabled                bool
+	Credentials            int
+	RecentIssued           int
+}
+
+// ACMEEndpoint is one endpoint's administration page. It carries no
+// registration authority fingerprint, unlike its SCEP counterpart: ACME clients
+// sign with their own account keys, so an endpoint holds no key material of its
+// own.
+type ACMEEndpoint struct {
+	ID, Name, CAName           string
+	DirectoryURL               string
+	SubjectPattern, SANPattern string
+	CAFingerprint              string
+	Enabled                    bool
+	ValidityDays               int
+	// APIBase is this endpoint's administration prefix, so the forms below
+	// concatenate rather than each learning how to build the path.
+	APIBase string
+	// LiveCertificates is how many certificates this endpoint issued that are
+	// still neither revoked nor expired — the services that would be affected by
+	// deleting it.
+	LiveCertificates int
+	EKUs             []ProtocolEKU
+}
+
+// ACMECredential is one External Account Binding credential. The HMAC key is
+// deliberately absent: it exists in a readable form for exactly one response,
+// and is never read back out of the database.
+type ACMECredential struct {
+	ID, Label, KID string
+	IdentifierPin  string
+	SingleUse      bool
+	Used, Revoked  bool
+	ExpiresAt      *time.Time
+	CreatedAt      time.Time
+}
+
+// Status renders what a credential can currently do, which is the only thing an
+// administrator looking at the list wants to know.
+func (cr ACMECredential) Status() string {
+	switch {
+	case cr.Revoked:
+		return "Revoked"
+	case cr.ExpiresAt != nil && !cr.ExpiresAt.After(time.Now()):
+		return "Expired"
+	case cr.SingleUse && cr.Used:
+		return "Used"
+	case cr.SingleUse:
+		return "Unused"
+	}
+	return "Active"
+}
+
+func (cr ACMECredential) Live() bool { return cr.Status() == "Active" || cr.Status() == "Unused" }
+
+// ACMEOrder is one row of the order log.
+type ACMEOrder struct {
+	ID, Status, Identifiers, Error string
+	CreatedAt                      time.Time
+}
+
+// Result renders an order's protocol status as something an administrator can
+// act on. RFC 8555's names are precise, but they are the state machine's
+// vocabulary rather than the operator's: someone scanning this log wants to know
+// whether a certificate came out, and if not, who is being waited on. An
+// unrecognized status is shown as-is rather than hidden, so a state this misses
+// looks like an omission instead of passing for something it is not.
+func (o ACMEOrder) Result() string {
+	switch o.Status {
+	case "valid":
+		return "Issued"
+	case "invalid":
+		return "Failed"
+	case "ready":
+		return "Awaiting finalize"
+	case "pending":
+		return "Awaiting validation"
+	case "processing":
+		return "Issuing"
+	}
+	return o.Status
+}
+
+// Tone colours the result. Everything short of issued or failed is neutral,
+// including an order waiting to be finalized: that is what every order looks
+// like for the moments between newOrder and finalize, so colouring it as a
+// problem would flag the normal path. An order abandoned there is retired to
+// "invalid" by the expiry sweep, which is when it turns red.
+func (o ACMEOrder) Tone() c.Tone {
+	switch o.Status {
+	case "valid":
+		return c.ToneSuccess
+	case "invalid":
+		return c.ToneDestructive
+	}
+	return c.ToneNeutral
+}
+
+// ACMEEndpointData is one endpoint's administration page.
+type ACMEEndpointData struct {
+	Endpoint    ACMEEndpoint
+	Credentials []ACMECredential
+	Orders      []ACMEOrder
+}
+
+type ACMEPage struct {
+	Endpoints []ACMEEndpointRow
+	CAs       []ProtocolCA
+}
+
+templ ACMEPanel(data ACMEPage) {
+	<div class="stack flex flex-col gap-6">
+		@ACMEIntro()
+		if len(data.Endpoints) == 0 {
+			@c.EmptyState(c.EmptyStateProps{Icon: "radio", Title: "No ACME endpoints yet", Description: "An endpoint is one directory URL bound to an issuing CA. Point cert-manager, Caddy, Traefik, acme.sh, or lego at it and they enroll and renew on their own.", Compact: true, Muted: true}) {
+				if len(data.CAs) == 0 {
+					<p class="text-sm text-muted-foreground">Create an active issuing CA first.</p>
+					@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+						<span>Go to Certificate Authorities</span>@c.Icon("arrow-up-right")
+					}
+				} else {
+					@c.Button(c.ButtonProps{Attrs: templ.Attributes{"data-script": "on click call document.getElementById('acme-setup-dialog').showModal()"}}) {
+						@c.Icon("plus")
+						<span>Add endpoint</span>
+					}
+				}
+				<p class="mt-3 text-sm text-muted-foreground">
+					<a href={ templ.SafeURL(layout.DocsACMEURL) } target="_blank" rel="noopener" class="underline underline-offset-2">Read the ACME setup guide</a>
+				</p>
+			}
+		} else {
+			@ACMEEndpointList(data)
+		}
+	</div>
+	@ACMESetupDialog(data.CAs)
+}
+
+// ACMEIntro explains the one thing about this implementation that will surprise
+// anyone who knows public ACME. Leaving it to the documentation would mean an
+// administrator's first encounter with it is a client that skipped a challenge
+// they expected to see.
+templ ACMEIntro() {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">How enrollment is authorized</h4>
+		<p class="mt-1 mb-0 text-sm text-muted-foreground">
+			Public ACME proves control of a name by reaching your server over HTTP or by reading public DNS. Neither works for a private CA issuing for names like <code class="font-mono text-xs">vpn.internal</code>, so SimpleSCEP authorizes differently: a client registers with an External Account Binding credential you mint here, and what it may then ask for is decided by this endpoint's issuance policy and by the names you pin to that credential. Clients see their authorizations already valid and go straight to issuing.
+		</p>
+	</div>
+}
+
+templ ACMEEndpointList(data ACMEPage) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">ACME endpoints</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Each endpoint is its own directory URL, issuing CA, issuance policy, and set of credentials.</p>
+			</div>
+			if len(data.CAs) > 0 {
+				@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"data-script": "on click call document.getElementById('acme-setup-dialog').showModal()"}}) {
+					@c.Icon("plus")
+					<span>Add endpoint</span>
+				}
+			}
+		</div>
+		<div class="mt-4 overflow-x-auto">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="text-left text-muted-foreground">
+						<th class="py-2 pr-4 font-medium">Name</th>
+						<th class="py-2 pr-4 font-medium">Issuing CA</th>
+						<th class="py-2 pr-4 font-medium">Status</th>
+						<th class="py-2 pr-4 font-medium">Credentials</th>
+						<th class="py-2 font-medium">Issued (30d)</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, e := range data.Endpoints {
+						<tr class="border-t border-border">
+							<td class="py-2 pr-4">
+								<a href={ templ.SafeURL(e.Path) } class="font-medium underline-offset-2 hover:underline">{ e.Name }</a>
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ e.CAName }</td>
+							<td class="py-2 pr-4">
+								if e.Enabled {
+									@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+										On
+									}
+								} else {
+									@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+										Off
+									}
+								}
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ strconv.Itoa(e.Credentials) }</td>
+							<td class="py-2 text-muted-foreground">{ strconv.Itoa(e.RecentIssued) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+
+templ ACMEEndpointSummary(e ACMEEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<div class="flex items-center gap-2">
+					<h4 class="m-0 font-bold">{ e.Name }</h4>
+					if e.Enabled {
+						@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+							Accepting enrollments
+						}
+					} else {
+						@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+							Off
+						}
+					}
+				</div>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">This is the directory URL you configure a client with. Issuing CA: { e.CAName }.</p>
+			</div>
+			@ToggleForm(e.APIBase+"/enabled", "endpoint-error", e.Enabled, "")
+		</div>
+		<div class="mt-4 grid gap-4">
+			@SecretBlock("Directory URL", e.DirectoryURL)
+			<p class="m-0 text-sm text-muted-foreground">
+				The client must already trust this endpoint's root certificate, or its very first request fails TLS verification before it reaches ACME at all.
+				if e.CAFingerprint != "" {
+					Issuing CA SHA-256: <code class="font-mono text-xs break-all">{ e.CAFingerprint }</code>
+				}
+			</p>
+		</div>
+		<p id="endpoint-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+templ ACMECredentialList(e ACMEEndpoint, credentials []ACMECredential) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">External account credentials</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Each credential is a key identifier and an HMAC key a client registers with. The HMAC key is shown once, when you mint it, and cannot be recovered afterwards.</p>
+			</div>
+			@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('acme-credential-dialog').showModal()"}}) {
+				@c.Icon("plus")
+				<span>Mint credential</span>
+			}
+		</div>
+		if len(credentials) == 0 {
+			<p class="mt-3 mb-0 text-sm text-muted-foreground">No credentials yet. A client cannot register until it has one.</p>
+		} else {
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="text-left text-muted-foreground">
+							<th class="py-2 pr-4 font-medium">Label</th>
+							<th class="py-2 pr-4 font-medium">Key identifier</th>
+							<th class="py-2 pr-4 font-medium">Pinned to</th>
+							<th class="py-2 pr-4 font-medium">Status</th>
+							<th class="py-2 font-medium"></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, cr := range credentials {
+							<tr class="border-t border-border">
+								<td class="py-2 pr-4">
+									if cr.Label != "" {
+										{ cr.Label }
+									} else {
+										<span class="text-muted-foreground">Unlabelled</span>
+									}
+								</td>
+								<td class="py-2 pr-4 font-mono text-xs break-all text-muted-foreground">{ cr.KID }</td>
+								<td class="py-2 pr-4 text-muted-foreground">
+									if cr.IdentifierPin != "" {
+										{ cr.IdentifierPin }
+									} else {
+										Endpoint policy
+									}
+								</td>
+								<td class="py-2 pr-4">
+									if cr.Live() {
+										@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+											{ cr.Status() }
+										}
+									} else {
+										@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+											{ cr.Status() }
+										}
+									}
+								</td>
+								<td class="py-2">
+									if !cr.Revoked {
+										<form
+											method="post"
+											action={ templ.SafeURL(e.APIBase + "/credentials/" + cr.ID + "/revoke") }
+											hx-post={ e.APIBase + "/credentials/" + cr.ID + "/revoke" }
+											hx-target="#credential-error"
+											hx-swap="innerHTML"
+										>
+											@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall}) {
+												Revoke
+											}
+										</form>
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			<p class="mt-3 mb-0 text-sm text-muted-foreground">Revoking a credential also deactivates the accounts it registered, so the client it was issued to stops being able to order.</p>
+		}
+		<p id="credential-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+templ ACMEIssuancePolicy(e ACMEEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Issuance policy</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">What every certificate ordered through this endpoint looks like, and which names a client may ask for.</p>
+			</div>
+			@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('acme-policy-dialog').showModal()"}}) {
+				Edit
+			}
+		</div>
+		<div class="mt-4 grid gap-4 grid-cols-3 max-md:grid-cols-1">
+			@c.Info("Validity", strconv.Itoa(e.ValidityDays)+" days")
+			@c.Info("Subject pattern", patternLabel(e.SubjectPattern))
+			@SANPatternInfo(e.SANPattern)
+		</div>
+		<p class="mt-3 mb-0 text-sm text-muted-foreground">The SAN pattern is applied when a client places an order, so a client asking for a name you do not allow is told which one at that point rather than after it has generated a key.</p>
+	</div>
+}
+
+templ ACMEOrderLog(orders []ACMEOrder) {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">Recent orders</h4>
+		if len(orders) == 0 {
+			<p class="mt-1 mb-0 text-sm text-muted-foreground">Nothing yet. Orders appear here as clients enroll and renew, including the ones that were refused and why.</p>
+		} else {
+			<div class="mt-3 overflow-x-auto">
+				<table class="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_th]:border-b [&_th]:border-border [&_th]:p-2 [&_th]:text-left [&_th]:text-xs [&_th]:uppercase [&_th]:tracking-[.1em] [&_th]:text-muted-foreground [&_td]:border-b [&_td]:border-border [&_td]:p-2 [&_td]:align-top">
+					<thead><tr><th>Time</th><th>Identifiers</th><th>Result</th></tr></thead>
+					<tbody>
+						for _, o := range orders {
+							<tr>
+								<td class="whitespace-nowrap">{ o.CreatedAt.UTC().Format("2006-01-02 15:04:05Z") }</td>
+								<td class="break-all">{ o.Identifiers }</td>
+								<td>
+									@c.Pill(c.PillProps{Tone: o.Tone()}) {
+										{ o.Result() }
+									}
+									if o.Status == "invalid" && o.Error != "" {
+										<p class="mt-1 mb-0 text-xs text-muted-foreground">{ o.Error }</p>
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</div>
+}
+
+templ ACMESetupDialog(cas []ProtocolCA) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "acme-setup-dialog"}}) {
+		<form method="post" action="/api/acme/endpoints" hx-post="/api/acme/endpoints" hx-target="#acme-setup-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Add an ACME endpoint", Description: "This creates a directory URL. The issuing CA is fixed once created; everything else can change later."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "How you will recognize this endpoint, e.g. Kubernetes ingress. Up to 64 characters."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "placeholder": "Kubernetes ingress"}})
+				}
+				@c.Field(c.FieldProps{Label: "Issuing CA", Hint: "Every certificate ordered through this endpoint is signed by this CA."}) {
+					@c.Select(templ.Attributes{"name": "ca_id", "required": true}) {
+						for _, ca := range cas {
+							<option value={ ca.ID }>{ ca.Name }</option>
+						}
+					}
+				}
+				<p id="acme-setup-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Create endpoint
+				}
+			}
+		</form>
+	}
+}
+
+templ ACMECredentialDialog(e ACMEEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "acme-credential-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/credentials") } hx-post={ e.APIBase + "/credentials" } hx-target="#acme-credential-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Mint an external account credential", Description: "This is what a client registers with. Configure it once per client; the client keeps its own account key from then on."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id="acme-credential-dialog-fields" class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Label", Hint: "For your own records, e.g. staging cluster. Up to 64 characters."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "label", "maxlength": "64", "placeholder": "staging cluster"}})
+					}
+					@c.Field(c.FieldProps{Label: "Pin to these names (optional)", Hint: "Comma-separated. An account registered with this credential can then order only these exact identifiers, whatever the endpoint policy would otherwise allow. Leave blank to fall back to the SAN pattern."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "identifiers", "placeholder": "ingress.staging.internal"}})
+					}
+					@c.Field(c.FieldProps{Label: "Expires after (hours)", Hint: "Leave blank for a credential that does not expire. The credential only guards registration, so a short life is easy: a client that has already registered keeps working."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "ttl_hours", "type": "number", "min": "1", "placeholder": "72"}})
+					}
+					<label class="flex items-start gap-2 text-sm">
+						<input type="checkbox" name="single_use" value="true"/>
+						<span>Single use. The credential binds one account and is then spent, which is what you want when handing it to one machine. Leave it off to provision a fleet from one credential.</span>
+					</label>
+				</div>
+				<p id="acme-credential-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			<div id="acme-credential-dialog-actions">
+				@c.DialogActions(nil) {
+					@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+						Cancel
+					}
+					@c.Button(c.ButtonProps{}) {
+						Mint credential
+					}
+				}
+			</div>
+		</form>
+	}
+}
+
+// ACMECredentialSecret is swapped into the mint dialog in place of its form.
+// This is the only moment the HMAC key exists in a readable form anywhere, which
+// is why it replaces the dialog rather than redirecting: a navigation would lose
+// it.
+templ ACMECredentialSecret(directoryURL string, kid string, hmacKey string, returnURL string) {
+	<div class="grid gap-4" data-script="init add @hidden to #acme-credential-dialog-fields then add @hidden to #acme-credential-dialog-actions">
+		<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+			<span>
+				@c.Icon("circle-alert")
+			</span>
+			<div class="text-sm"><strong>Copy this now.</strong> The HMAC key is not stored in a form anyone can read back, including us. If you lose it, mint another credential.</div>
+		</div>
+		@SecretBlock("Directory URL", directoryURL)
+		@SecretBlock("Key identifier (kid)", kid)
+		@SecretBlock("HMAC key", hmacKey)
+		// Collapsed by default: this dialog already carries a warning, three
+		// copyable secrets, and the Done button above the fold matters more than
+		// four clients' worth of setup flags. Expanding it is one click away.
+		<details class="text-sm text-muted-foreground [&_summary]:cursor-pointer [&_summary]:text-primary [&_summary]:font-medium">
+			<summary>Configuring a client</summary>
+			<ul class="m-0 mt-2 grid list-disc gap-1.5 pl-5">
+				<li><strong class="text-foreground">cert-manager:</strong> an <code class="font-mono text-xs">ACMEIssuer</code> with <code class="font-mono text-xs">server</code> set to the directory URL and <code class="font-mono text-xs">externalAccountBinding.keyID</code> plus a secret holding the HMAC key.</li>
+				<li><strong class="text-foreground">Caddy:</strong> <code class="font-mono text-xs">acme_ca</code> set to the directory URL, with <code class="font-mono text-xs">acme_eab</code> carrying the key identifier and HMAC key.</li>
+				<li><strong class="text-foreground">certbot:</strong> <code class="font-mono text-xs">--server</code>, <code class="font-mono text-xs">--eab-kid</code>, and <code class="font-mono text-xs">--eab-hmac-key</code>.</li>
+				<li><strong class="text-foreground">lego:</strong> <code class="font-mono text-xs">--server</code>, <code class="font-mono text-xs">--eab</code>, <code class="font-mono text-xs">--kid</code>, and <code class="font-mono text-xs">--hmac</code>.</li>
+			</ul>
+		</details>
+		<div class="flex justify-end">
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '" + returnURL + "'"}}) {
+				Done
+			}
+		</div>
+	</div>
+}
+
+templ ACMEPolicyDialog(e ACMEEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "acme-policy-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/policy") } hx-post={ e.APIBase + "/policy" } hx-target="#acme-policy-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Issuance policy", Description: "SimpleSCEP issues exactly what the client's CSR asks for, so these patterns are the guardrail on what a client may ask for."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "Renaming does not change the directory URL, so configured clients are unaffected."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "value": e.Name}})
+				}
+				@c.Field(c.FieldProps{Label: "Validity (days)", Hint: "1 to 3650. ACME clients renew unattended, so short lifetimes cost nothing."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "validity_days", "type": "number", "required": true, "min": "1", "max": "3650", "value": strconv.Itoa(e.ValidityDays)}})
+				}
+				@c.Field(c.FieldProps{Label: "Subject pattern", Hint: "Regular expression the CSR subject must match. Leave blank to allow any subject."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "subject_pattern", "value": e.SubjectPattern, "placeholder": ".+"}})
+				}
+				@c.Field(c.FieldProps{Label: "SAN pattern", Hint: "Regular expression every ordered identifier must match, checked one name at a time. Leave blank to permit none — an ACME order names the identifiers it wants, so an endpoint with no pattern issues nothing."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_pattern", "value": e.SANPattern, "placeholder": ".*\\.internal"}})
+				}
+				@c.Field(c.FieldProps{Label: "Permitted extended key usages", Hint: "Every certificate issued here carries these usages. Usages absent from the issuing CA's profile cannot be offered."}) {
+					<div class="grid gap-2 grid-cols-2 max-md:grid-cols-1">
+						for _, eku := range e.EKUs {
+							<label class="flex items-start gap-2 text-sm">
+								if !eku.Available {
+									<input type="checkbox" disabled/>
+									<span class="text-muted-foreground">{ eku.Label } (not in CA profile)</span>
+								} else if eku.Allowed {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token } checked/>
+									<span>{ eku.Label }</span>
+								} else {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token }/>
+									<span>{ eku.Label }</span>
+								}
+							</label>
+						}
+					</div>
+				}
+				<p id="acme-policy-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Save policy
+				}
+			}
+		</form>
+	}
+}

@@ -1,0 +1,16 @@
+{
+  "scripts": {
+    "css:build": "tailwindcss -i input.css -o static/app.css",
+    "css:build:min": "tailwindcss -i input.css -o static/app.css --minify",
+    "css:watch": "tailwindcss -i input.css -o static/app.css --watch",
+    "js:build": "mkdir -p static && cp node_modules/htmx.org/dist/htmx.min.js static/htmx.min.js && cp node_modules/hyperscript.org/dist/_hyperscript.min.js static/hyperscript.min.js && cp assets/js/mfa.js static/mfa.js && cp assets/js/toast.js static/toast.js && cp assets/js/chart.js static/chart.js",
+    "assets:build": "npm run css:build:min && npm run js:build",
+    "dev:server": "npm run css:build && npm run js:build && (npm run css:watch & go run ./cmd serve)"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "htmx.org": "2.0.4",
+    "hyperscript.org": "0.9.93",
+    "tailwindcss": "^4.3.3"
+  }
+}

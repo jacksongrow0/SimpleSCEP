@@ -1,0 +1,12 @@
+package components
+
+templ Input(props InputProps) {
+	if props.Icon == "" {
+		<input { mergeAttrs(inputClass(), props.Attrs)... }/>
+	} else {
+		<div class="search-input relative [&>svg]:absolute [&>svg]:top-2.5 [&>svg]:left-2 [&>svg]:text-muted-foreground [&_input]:pl-8">
+			@Icon(props.Icon)
+			<input { mergeAttrs(inputClass(), props.Attrs)... }/>
+		</div>
+	}
+}

@@ -1,0 +1,50 @@
+package components
+
+templ Info(label, value string) {
+	@InfoSlot(label) {
+		{ value }
+	}
+}
+
+// InfoBadge is Info with a pill beside the label, for a field whose state has to
+// be flagged rather than merely shown — a policy left unset that is therefore
+// refusing everything, say. The badge sits on the label because that is what the
+// reader is scanning for; a warning attached to the value reads as a comment on
+// the value rather than on the setting.
+//
+// An empty badge renders none, so a caller can decide per row without branching.
+templ InfoBadge(label, value, badge string, tone Tone) {
+	@infoTile(label, badge, tone) {
+		{ value }
+	}
+}
+
+// InfoSlot is Info with the value supplied as markup, for values that must
+// reach the browser as elements — a LocalTime, a link — rather than as text.
+templ InfoSlot(label string) {
+	@infoTile(label, "", ToneNeutral) {
+		{ children... }
+	}
+}
+
+// infoTile is the shared box.
+//
+// The label and value classes sit on the elements themselves rather than on the
+// container as [&_span]: and [&_strong]: descendant utilities, which is what
+// they were. Those reached into anything a caller nested — the badge above is a
+// Pill, which is a span, and inherited "block, uppercase, muted" from a rule
+// meant for the label. Descendant utilities on a component that takes children
+// style markup the component has never seen.
+templ infoTile(label, badge string, tone Tone) {
+	<div class="info rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3">
+		<div class="flex flex-wrap items-center gap-2">
+			<span class="text-xs uppercase tracking-[.1em] text-muted-foreground">{ label }</span>
+			if badge != "" {
+				@Pill(PillProps{Tone: tone}) {
+					{ badge }
+				}
+			}
+		</div>
+		<strong class="mt-1 block font-medium">{ children... }</strong>
+	</div>
+}

@@ -1,0 +1,7 @@
+package components
+
+templ Select(attrs templ.Attributes) {
+	<select { mergeAttrs(inputClass()+" [&_option]:bg-popover", attrs)... }>
+		{ children... }
+	</select>
+}

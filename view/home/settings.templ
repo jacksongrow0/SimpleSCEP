@@ -1,0 +1,57 @@
+package home
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+)
+
+templ RoleCard(title string, copy string) {
+	@c.Card(c.CardProps{Attrs: templ.Attributes{"class": "role-card [&_.card-head]:pb-2 [&_.card-head_svg]:text-primary [&_.card-body]:text-sm [&_.card-body]:text-muted-foreground"}}) {
+		@c.CardHeader(c.CardHeaderProps{Title: title, Icon: "shield"})
+		@c.CardBody(nil) {
+			{ copy }
+		}
+	}
+}
+
+templ RoleOptions(selected string) {
+	<option value="administrator" selected?={ selected == "administrator" }>Administrator</option>
+	<option value="certificate_manager" selected?={ selected == "certificate_manager" }>Certificate Manager</option>
+	<option value="auditor" selected?={ selected == "auditor" }>Certificate Auditor</option>
+}
+
+templ RemoveDialog(user auth.User) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "remove-" + user.ID}}) {
+		<form method="post" action={ "/settings/users/" + user.ID + "/delete" }>
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Remove " + user.Name + "?", Description: "They immediately lose access to this organization. Certificates they issued stay valid."})
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonDestructive}) {
+					Remove member
+				}
+			}
+		</form>
+	}
+}
+
+func roleLabel(role string) string {
+	if role == "certificate_manager" {
+		return "Certificate Manager"
+	}
+	if role == "auditor" {
+		return "Certificate Auditor"
+	}
+	return "Administrator"
+}
+func userCount(users []auth.User) string { return fmt.Sprint(len(users)) }
+func userInitial(name string) string {
+	if name == "" {
+		return "U"
+	}
+	return strings.ToUpper(name[:1])
+}

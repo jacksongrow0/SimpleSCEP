@@ -1,0 +1,103 @@
+package home
+
+import (
+	"strconv"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// OverviewData is the organization's actual standing: what it has provisioned
+// and which onboarding steps are already done. Every number on the page comes
+// from here — none of it is illustrative.
+type OverviewData struct {
+	IssuingCAs       int
+	Identities       int
+	EnabledEndpoints int
+	ExpiringSoon     int
+	HasIssuingCA     bool
+	HasProtocol      bool
+	HasCertificate   bool
+	HasTeam          bool
+	// Protocols names the enrollment protocols actually turned on; empty means
+	// none are.
+	Protocols []string
+	// Enrollments is the graph that takes the setup card's place once setup is
+	// finished. It is loaded only in that case — an organization still working
+	// through the checklist has a graph of almost nothing, and the checklist is
+	// the more useful thing to be looking at.
+	Enrollments EnrollmentChart
+}
+
+templ Index(session auth.Session, data OverviewData) {
+	@layout.App("Overview", "overview", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			<div class="grid gap-4 four grid-cols-4 max-md:grid-cols-1">
+				@c.Metric(c.MetricProps{Label: "Issuing CAs", Value: strconv.Itoa(data.IssuingCAs), Icon: "shield-check"})
+				@c.Metric(c.MetricProps{Label: "Certificate identities", Value: strconv.Itoa(data.Identities), Icon: "file-key"})
+				@c.Metric(c.MetricProps{Label: "Enrollment protocols", Value: strconv.Itoa(data.EnabledEndpoints), Icon: "radio"})
+				@c.Metric(c.MetricProps{Label: "Expiring < 30d", Value: strconv.Itoa(data.ExpiringSoon), Meta: expiringMeta(data.ExpiringSoon), Icon: "triangle-alert"})
+			</div>
+			<div>
+				<div class="muted text-muted-foreground mb-1.5 text-xs">Enabled protocols</div>
+				if len(data.Protocols) == 0 {
+					<span class="text-sm text-muted-foreground">None enabled yet</span>
+				} else {
+					<div class="flex flex-wrap gap-1.5">
+						for _, name := range data.Protocols {
+							@c.Pill(c.PillProps{}) {
+								{ name }
+							}
+						}
+					</div>
+				}
+			</div>
+			if data.SetupComplete() {
+				@Enrollments(data.Enrollments)
+			} else {
+				@c.Card(c.CardProps{}) {
+					@c.CardHeader(c.CardHeaderProps{Title: "Get your Cloud PKI running", Description: setupCopy(data)})
+					@c.CardBody(templ.Attributes{"class": "steps flex flex-col gap-3"}) {
+						@Step("1", data.HasIssuingCA, "Create an Issuing CA", "Provision an HSM-backed issuing authority for your certificates.", "/certificate-authorities")
+						@Step("2", data.HasProtocol, "Enable an enrollment protocol", "Turn on SCEP, ACME, or EST to automate certificate issuance.", "/protocols")
+						@Step("3", data.HasCertificate, "Issue your first certificate", "Create a server, client, or CSR-based certificate from your Issuing CA.", "/certificates")
+						@Step("4", data.HasTeam, "Invite your team", "Add administrators, certificate managers, and auditors.", "/users")
+					}
+				}
+			}
+		</div>
+	}
+}
+
+func expiringMeta(n int) string {
+	if n == 0 {
+		return "Nothing needs renewing"
+	}
+	if n == 1 {
+		return "1 certificate needs renewing"
+	}
+	return strconv.Itoa(n) + " certificates need renewing"
+}
+
+// SetupComplete reports whether all four onboarding steps are done. It decides
+// what occupies the wide column of the overview — the checklist while there is
+// still something to do, the enrollment graph once there is not — and the
+// handler reads it to decide whether to load the graph's data at all.
+func (d OverviewData) SetupComplete() bool {
+	return d.stepsDone() == 4
+}
+
+func (d OverviewData) stepsDone() int {
+	done := 0
+	for _, step := range []bool{d.HasIssuingCA, d.HasProtocol, d.HasCertificate, d.HasTeam} {
+		if step {
+			done++
+		}
+	}
+	return done
+}
+
+func setupCopy(data OverviewData) string {
+	return strconv.Itoa(data.stepsDone()) + " of 4 steps complete."
+}

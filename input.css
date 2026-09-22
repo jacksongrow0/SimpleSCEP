@@ -1,0 +1,160 @@
+@import "tailwindcss";
+@source "./view/**/*.templ";
+/* toast.js builds its elements in JavaScript, so its class names appear in no
+   template and Tailwind would generate none of them. */
+@source "./assets/js/toast.js";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0.16 0.03 250);
+  --foreground: oklch(0.98 0.005 240);
+  --card: oklch(0.21 0.035 250);
+  --card-foreground: oklch(0.98 0.005 240);
+  --popover: oklch(0.21 0.035 250);
+  --popover-foreground: oklch(0.98 0.005 240);
+  --primary: oklch(0.84 0.13 210);
+  --primary-foreground: oklch(0.16 0.04 250);
+  --secondary: oklch(0.27 0.035 250);
+  --secondary-foreground: oklch(0.98 0.005 240);
+  --muted: oklch(0.24 0.03 250);
+  --muted-foreground: oklch(0.70 0.02 240);
+  --accent: oklch(0.30 0.04 220);
+  --accent-foreground: oklch(0.98 0.005 240);
+  --destructive: oklch(0.65 0.22 25);
+  --destructive-foreground: oklch(0.98 0.005 240);
+  --success: oklch(0.72 0.17 155);
+  --success-foreground: oklch(0.14 0.04 250);
+  --warning: oklch(0.80 0.15 75);
+  --warning-foreground: oklch(0.14 0.04 250);
+  --border: oklch(0.30 0.03 250);
+  --input: oklch(0.24 0.03 250);
+  --ring: oklch(0.84 0.13 210);
+  /* The categorical series palette, in fixed slot order: a series keeps its
+     slot whatever it ranks, so filtering or a quiet month never repaints the
+     survivors. Six slots because six enrollment methods are plotted together.
+
+     These are not the interface's own colours, and that is deliberate. What
+     stood here was --primary, --success, --warning, a purple and --destructive:
+     status colours doing duty as series identity, so a line meaning "EST" was
+     painted the same red as "this failed". They were also far too light for a
+     categorical set — --primary sits at L 0.84, well outside the 0.48–0.67 band
+     a mark needs on a dark ground to read as its own hue rather than as glare.
+
+     The values below were validated as a set against this card's surface
+     (--card, #0b1928) for the checks that can be computed rather than eyeballed:
+     every slot inside the lightness band, above the 0.10 chroma floor, at least
+     3:1 against the surface, and — the one that matters — a worst adjacent-pair
+     separation of ΔE 8.4 under simulated protanopia and 19.3 under normal
+     vision. Changing a hue here means re-running that check, not judging it by
+     eye: the pairs that fail are never the ones that look close. */
+  --chart-1: oklch(0.62 0.161 255);
+  --chart-2: oklch(0.62 0.173 40);
+  --chart-3: oklch(0.62 0.128 163);
+  --chart-4: oklch(0.67 0.143 73);
+  --chart-5: oklch(0.62 0.171 1);
+  --chart-6: oklch(0.53 0.180 142);
+  --sidebar: oklch(0.13 0.03 250);
+  --sidebar-foreground: oklch(0.92 0.01 240);
+  --sidebar-primary: oklch(0.84 0.13 210);
+  --sidebar-primary-foreground: oklch(0.14 0.04 250);
+  --sidebar-accent: oklch(0.23 0.035 250);
+  --sidebar-accent-foreground: oklch(0.98 0.005 240);
+  --sidebar-border: oklch(0.26 0.03 250);
+  --sidebar-ring: oklch(0.84 0.13 210);
+  --gradient-primary: linear-gradient(135deg, oklch(0.84 0.13 210), oklch(0.72 0.15 240));
+  --gradient-hero: radial-gradient(ellipse at top, oklch(0.28 0.08 240) 0%, oklch(0.16 0.03 250) 60%);
+}
+
+.dark {
+  --background: oklch(0.16 0.03 250);
+  --foreground: oklch(0.98 0.005 240);
+  --card: oklch(0.21 0.035 250);
+  --card-foreground: oklch(0.98 0.005 240);
+  --popover: oklch(0.21 0.035 250);
+  --popover-foreground: oklch(0.98 0.005 240);
+  --primary: oklch(0.84 0.13 210);
+  --primary-foreground: oklch(0.16 0.04 250);
+  --secondary: oklch(0.27 0.035 250);
+  --secondary-foreground: oklch(0.98 0.005 240);
+  --muted: oklch(0.24 0.03 250);
+  --muted-foreground: oklch(0.70 0.02 240);
+  --accent: oklch(0.30 0.04 220);
+  --accent-foreground: oklch(0.98 0.005 240);
+  --destructive: oklch(0.65 0.22 25);
+  --destructive-foreground: oklch(0.98 0.005 240);
+  --border: oklch(0.30 0.03 250);
+  --input: oklch(0.24 0.03 250);
+  --ring: oklch(0.84 0.13 210);
+  --sidebar: oklch(0.13 0.03 250);
+  --sidebar-foreground: oklch(0.92 0.01 240);
+  --sidebar-primary: oklch(0.84 0.13 210);
+  --sidebar-primary-foreground: oklch(0.14 0.04 250);
+  --sidebar-accent: oklch(0.23 0.035 250);
+  --sidebar-accent-foreground: oklch(0.98 0.005 240);
+  --sidebar-border: oklch(0.26 0.03 250);
+  --sidebar-ring: oklch(0.84 0.13 210);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+}

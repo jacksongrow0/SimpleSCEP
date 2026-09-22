@@ -1,0 +1,71 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+templ CreateAction(label string, dialog string) {
+	@c.Button(c.ButtonProps{Attrs: templ.Attributes{"data-dialog": dialog, "data-script": "on click call document.getElementById(my @data-dialog).showModal()"}}) {
+		@c.Icon("plus")
+		<span>{ label }</span>
+	}
+}
+
+// Step is one onboarding step. Done steps carry a check in the success colour;
+// outstanding ones keep their number and invite the reader to start, so the
+// card reports where the organization actually is rather than showing four
+// ticks whatever the state.
+templ Step(n string, done bool, title string, copy string, href string) {
+	<div class="step flex items-start gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&>div]:min-w-0 [&>div]:flex-1 [&_strong]:font-medium [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground">
+		if done {
+			<span class="step-num grid size-6 shrink-0 place-items-center rounded-full font-bold done bg-[color-mix(in_oklch,var(--color-success)_20%,transparent)] text-success">✓</span>
+		} else {
+			<span class="step-num grid size-6 shrink-0 place-items-center rounded-full bg-secondary font-bold text-muted-foreground">{ n }</span>
+		}
+		<div><strong>{ title }</strong><p>{ copy }</p></div>
+		@c.ButtonLink(c.ButtonLinkProps{Href: href, ButtonProps: c.ButtonProps{Variant: c.ButtonGhost, Size: c.ButtonSmall}}) {
+			if done {
+				Review
+			} else {
+				Start
+			}
+		}
+	</div>
+}
+
+func shellSession(s auth.Session) layout.Session {
+	return layout.Session{UserID: s.UserID, Name: s.Name, Role: s.Role, OrganizationName: s.OrganizationName}
+}
+
+// SANPatternInfo is the subjectAltName rule as it appears on the SCEP, ACME and
+// EST endpoint pages. One component for all three because the rule means the
+// same thing on each, and an unset rule is the same refusal on each.
+templ SANPatternInfo(pattern string) {
+	@c.InfoBadge("SAN pattern", sanPatternLabel(pattern), sanPatternBadge(pattern), c.ToneWarning)
+}
+
+// sanPatternLabel says what the endpoint currently permits.
+// An unset SAN rule permits no subject alternative names at all — the default
+// is closed, so an endpoint issues only what an administrator has written a rule
+// for. That is the reverse of the subject rule, where blank still means
+// unconstrained, so this cannot share patternLabel: "Any" against an empty SAN
+// pattern would now be exactly wrong.
+func sanPatternLabel(pattern string) string {
+	if pattern == "" {
+		return "No SANs permitted"
+	}
+	return pattern
+}
+
+// sanPatternBadge flags the unset rule rather than leaving the reader to notice
+// the wording. An endpoint refusing every request that carries a SAN looks
+// identical from the outside to one that is simply broken, and the whole point
+// of failing closed is that it is visible.
+func sanPatternBadge(pattern string) string {
+	if pattern == "" {
+		return "Not configured"
+	}
+	return ""
+}

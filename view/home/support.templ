@@ -1,0 +1,33 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// Support points operators to the public community resources. A self-hosted
+// instance does not imply a commercial support relationship with the project.
+templ Support(session auth.Session, docsURL, issuesURL, securityURL string) {
+	@layout.App("Community", "support", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			<p class="text-muted-foreground">SimpleSCEP is community-supported. Use the public tracker for questions and reproducible bugs; report vulnerabilities privately.</p>
+			<div class="grid gap-4 three grid-cols-3 max-md:grid-cols-1">
+				@CommunityCard("Documentation", "book", "Deployment and protocol guides.", docsURL, "Read the documentation")
+				@CommunityCard("Issues", "github", "Report bugs and request features in the public repository.", issuesURL, "Open GitHub Issues")
+				@CommunityCard("Security", "shield-check", "Do not disclose suspected vulnerabilities in a public issue.", securityURL, "Read the security policy")
+			</div>
+		</div>
+	}
+}
+
+templ CommunityCard(title, icon, description, href, label string) {
+	@c.Card(c.CardProps{}) {
+		@c.CardHeader(c.CardHeaderProps{Title: title, Description: description, Icon: icon})
+		@c.CardBody(nil) {
+			@c.ButtonLink(c.ButtonLinkProps{Href: href, ButtonProps: c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{"target": "_blank", "rel": "noopener noreferrer"}}}) {
+				<span>{ label }</span>
+			}
+		}
+	}
+}

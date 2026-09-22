@@ -1,0 +1,21 @@
+package components
+
+templ Tooltip(props TooltipProps) {
+	<span { mergeAttrs("relative inline-flex", withDefault(props.Attrs, "data-script", "on mouseenter remove @hidden from #" + props.ID + " end on mouseleave add @hidden to #" + props.ID))... }>
+		{ children... }
+		<span id={ props.ID } role="tooltip" class="pointer-events-none absolute z-[100] rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs whitespace-nowrap text-popover-foreground shadow-md" style={ tooltipPosition(props.Position) } hidden>{ props.Content }</span>
+	</span>
+}
+
+func tooltipPosition(position TooltipPosition) string {
+	switch position {
+	case TooltipBelow:
+		return "top:calc(100% + 0.5rem);left:50%;transform:translateX(-50%)"
+	case TooltipLeft:
+		return "right:calc(100% + 0.5rem);top:50%;transform:translateY(-50%)"
+	case TooltipRight:
+		return "left:calc(100% + 0.5rem);top:50%;transform:translateY(-50%)"
+	default:
+		return "bottom:calc(100% + 0.5rem);left:50%;transform:translateX(-50%)"
+	}
+}

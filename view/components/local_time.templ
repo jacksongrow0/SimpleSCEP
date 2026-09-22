@@ -1,0 +1,32 @@
+package components
+
+import "time"
+
+// LocalTime renders an instant that the browser re-renders in the viewer's own
+// timezone. The server has no idea where the viewer is, so it writes the
+// machine-readable instant into datetime= and a UTC rendering as the text; the
+// localTime script in the page shell replaces that text on load. Without
+// JavaScript the UTC fallback is still correct and still labelled.
+//
+// Style selects the rendering: "datetime" for a date with a time of day,
+// "date" for the day alone.
+templ LocalTime(t time.Time, style string) {
+	<time datetime={ t.UTC().Format(time.RFC3339) } data-local={ style }>{ utcFallback(t, style) }</time>
+}
+
+// LocalTimeOr renders LocalTime for a set instant and a plain placeholder
+// ("Never", "Not scheduled") for a nil one, so callers do not repeat the check.
+templ LocalTimeOr(t *time.Time, style string, placeholder string) {
+	if t == nil || t.IsZero() {
+		{ placeholder }
+	} else {
+		@LocalTime(*t, style)
+	}
+}
+
+func utcFallback(t time.Time, style string) string {
+	if style == "date" {
+		return t.UTC().Format("Jan 2, 2006")
+	}
+	return t.UTC().Format("Jan 2, 2006 · 15:04 UTC")
+}

@@ -1,0 +1,301 @@
+package home
+
+import c "github.com/jacksongrow0/SimpleSCEP/view/components"
+
+// Enrollments is the overview's graph of what was issued, and it replaces the
+// setup checklist rather than joining it: once all four steps are done the
+// checklist is four ticks and four "Review" links, which is a picture of a
+// finished job taking the best position on the page. What an operator wants
+// there afterwards is whether enrollment is still happening.
+templ Enrollments(chart EnrollmentChart) {
+	@c.Card(c.CardProps{}) {
+		@c.CardHeader(c.CardHeaderProps{Title: "Certificate enrollments", Icon: "chart-line",
+			Description: enrollmentDescription(chart)})
+		@c.CardBody(nil) {
+			if chart.HasData() {
+				@enrollmentPlot(chart)
+				@enrollmentLegend(chart)
+				@enrollmentTable(chart)
+				// Emitted with the graph rather than from the shell, because the
+				// overview is the only page that has one. The version query is
+				// here for the same reason base.templ carries one on app.css:
+				// static/ is served with a Last-Modified and no Cache-Control,
+				// so a browser is free to keep an old copy without asking.
+				<script src="/static/chart.js?v=20260829-1" defer></script>
+			} else {
+				@c.EmptyState(c.EmptyStateProps{Icon: "chart-line", Compact: true,
+					Title:       "Nothing issued " + chart.RangeLabel(),
+					Description: "Certificates enrolled through any of the six methods — CSR, manual server, manual client, SCEP, ACME and EST — will be plotted here, one line each."})
+			}
+		}
+	}
+}
+
+// enrollmentPlot is the graph itself.
+//
+// Everything the hover layer needs is on the elements it decorates: the dates on
+// the figure, each line's own values on the line. chart.js therefore reads no
+// separate data blob and builds no markup — it moves the crosshair, moves the
+// dots, and writes numbers into text nodes that are already here. That is what
+// keeps the class names in this file, where Tailwind's scanner can see them,
+// and keeps untrusted text out of innerHTML.
+templ enrollmentPlot(chart EnrollmentChart) {
+	<figure
+		class="relative m-0 mt-2"
+		data-chart="enrollments"
+		data-days={ chart.DayLabels() }
+		data-plot-left={ chart.PlotLeft() }
+		data-plot-right={ chart.PlotRight() }
+		data-plot-top={ chart.PlotTop() }
+		data-plot-bottom={ chart.PlotBottom() }
+		data-max={ chart.MaxLabel() }
+	>
+		// The plot scrolls sideways in a narrow column rather than scaling down
+		// with it. Everything inside the SVG is in viewBox units including the
+		// type, so a graph squeezed into a phone-width card renders its axis at
+		// six pixels — present, unreadable, and worse than a scrollbar.
+		<div class="overflow-x-auto">
+			<svg
+				viewBox={ chart.ViewBox() }
+				role="img"
+				aria-label={ enrollmentSummary(chart) + " Use the table below the graph for the daily figures." }
+				tabindex="0"
+				class="block h-auto w-full min-w-[620px] touch-none rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
+			>
+				for _, tick := range chart.Ticks() {
+					<line
+						x1={ chart.PlotLeft() }
+						x2={ chart.PlotRight() }
+						y1={ tick.Y }
+						y2={ tick.Y }
+						stroke-width="1"
+						class="stroke-border"
+					></line>
+					<text
+						x={ chart.TickLabelX() }
+						y={ tick.Y }
+						dy="0.32em"
+						text-anchor="end"
+						class="fill-muted-foreground text-[13px] [font-variant-numeric:tabular-nums]"
+					>{ tick.Label }</text>
+				}
+				for _, tick := range chart.DateTicks() {
+					<text
+						x={ tick.X }
+						y={ chart.DateLabelY() }
+						text-anchor={ tick.Anchor }
+						class="fill-muted-foreground text-[13px]"
+					>{ tick.Label }</text>
+				}
+				// Behind the lines, so the reader's own pointer never obscures the
+				// data it is pointing at.
+				<line
+					data-chart-crosshair
+					x1="0"
+					x2="0"
+					y1={ chart.PlotTop() }
+					y2={ chart.PlotBottom() }
+					stroke-width="1"
+					visibility="hidden"
+					class="stroke-muted-foreground"
+				></line>
+				for _, series := range chart.Drawn() {
+					<polyline
+						data-chart-series={ series.Profile }
+						data-counts={ chart.Counts(series) }
+						points={ chart.Points(series) }
+						fill="none"
+						stroke-width="2"
+						stroke-linejoin="round"
+						stroke-linecap="round"
+						class={ enrollmentStroke(series.Slot) }
+					></polyline>
+				}
+				// One dot per line, parked until the pointer arrives. The ring is
+				// the card's own colour rather than a border: where two lines cross
+				// it is the gap that keeps both dots legible, and a stroke in ink
+				// would read as data.
+				for _, series := range chart.Drawn() {
+					<circle
+						data-chart-dot={ series.Profile }
+						cx="0"
+						cy="0"
+						r="4"
+						stroke-width="2"
+						visibility="hidden"
+						class={ "stroke-card " + enrollmentFill(series.Slot) }
+					></circle>
+				}
+			</svg>
+		</div>
+		@enrollmentTooltip(chart)
+	</figure>
+}
+
+// enrollmentTooltip is rendered in full and then hidden, one row per line, so
+// the hover layer only ever writes text into it. The date and the six numbers
+// are the only things that change.
+//
+// The value leads and the label follows, which is the legend's hierarchy
+// inverted: by the time someone is hovering they know which series they are
+// looking at and want the number.
+templ enrollmentTooltip(chart EnrollmentChart) {
+	<div
+		data-chart-tooltip
+		hidden
+		role="status"
+		aria-live="polite"
+		class="pointer-events-none absolute top-0 left-0 z-10 min-w-[10rem] -translate-x-1/2 rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-[0_4px_16px_#0006]"
+	>
+		<div data-chart-tooltip-date class="mb-2 text-xs text-muted-foreground"></div>
+		<div class="flex flex-col gap-1">
+			for _, series := range chart.Drawn() {
+				<div data-chart-tooltip-row={ series.Profile } class="grid grid-cols-[1rem_1fr_auto] items-center gap-2 text-xs">
+					<span class={ "h-0.5 w-4 rounded-full " + enrollmentBackground(series.Slot) } aria-hidden="true"></span>
+					<span class="text-muted-foreground">{ series.Label }</span>
+					<span data-chart-tooltip-value class="font-semibold text-foreground [font-variant-numeric:tabular-nums]">0</span>
+				</div>
+			}
+		</div>
+	</div>
+}
+
+// enrollmentLegend lists all six methods, including the ones with no line this
+// month. A method missing from the legend would read as a method that does not
+// exist; a method reading 0 reads as a method nobody used, which is the true
+// thing and often the interesting one.
+//
+// Each row carries its 30-day total, so every series has a number the reader can
+// get to without hovering anything.
+templ enrollmentLegend(chart EnrollmentChart) {
+	<ul class="legend mt-4 flex list-none flex-wrap gap-x-5 gap-y-2 p-0 [&_li]:my-0">
+		for _, series := range chart.Series {
+			<li class={ enrollmentLegendClass(series) }>
+				<span class={ "h-0.5 w-4 shrink-0 rounded-full " + enrollmentBackground(series.Slot) } aria-hidden="true"></span>
+				<span class="text-muted-foreground">{ series.Label }</span>
+				<span class="font-semibold text-foreground [font-variant-numeric:tabular-nums]">{ itoa(series.Total) }</span>
+			</li>
+		}
+	</ul>
+}
+
+// enrollmentTable is the graph in numbers. It is not a fallback: a line chart
+// answers "is enrollment healthy" and cannot answer "how many on the 14th", and
+// it is the only reading of this data available to a screen reader or to anyone
+// who cannot separate two of the six hues.
+templ enrollmentTable(chart EnrollmentChart) {
+	<details class="mt-4">
+		<summary class="cursor-pointer text-xs text-muted-foreground hover:text-foreground">Show the daily figures</summary>
+		<div class="mt-3 max-h-80 overflow-auto rounded-lg border border-border">
+			<table class="w-full border-collapse text-xs [&_th]:px-3 [&_th]:py-2 [&_td]:px-3 [&_td]:py-2">
+				<caption class="sr-only">Certificates issued per day by enrollment method, oldest last.</caption>
+				<thead class="sticky top-0 bg-card">
+					<tr class="border-b border-border">
+						<th scope="col" class="text-left font-medium text-muted-foreground">Day</th>
+						for _, series := range chart.Series {
+							<th scope="col" title={ series.Detail } class="text-right font-medium text-muted-foreground">{ series.Label }</th>
+						}
+						<th scope="col" class="text-right font-medium text-muted-foreground">Total</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, row := range chart.Rows() {
+						<tr class="border-b border-border last:border-0">
+							<th scope="row" class="text-left font-normal whitespace-nowrap">{ row.Day }</th>
+							for _, count := range row.Counts {
+								<td class="text-right [font-variant-numeric:tabular-nums]">{ count }</td>
+							}
+							<td class="text-right font-semibold [font-variant-numeric:tabular-nums]">{ itoa(row.Total) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</details>
+}
+
+// The six colour slots, written out one class at a time rather than composed
+// from a loop variable.
+//
+// Tailwind generates a rule only for a class it finds as literal text in a file
+// it scans, and input.css scans this package's .templ files. "stroke-chart-" +
+// itoa(slot) would produce correct-looking markup with no rule behind it and no
+// error anywhere — the lines would simply render in the default black. The
+// switch is the price of that guarantee.
+func enrollmentStroke(slot int) string {
+	switch slot {
+	case 1:
+		return "stroke-chart-1"
+	case 2:
+		return "stroke-chart-2"
+	case 3:
+		return "stroke-chart-3"
+	case 4:
+		return "stroke-chart-4"
+	case 5:
+		return "stroke-chart-5"
+	default:
+		return "stroke-chart-6"
+	}
+}
+
+func enrollmentFill(slot int) string {
+	switch slot {
+	case 1:
+		return "fill-chart-1"
+	case 2:
+		return "fill-chart-2"
+	case 3:
+		return "fill-chart-3"
+	case 4:
+		return "fill-chart-4"
+	case 5:
+		return "fill-chart-5"
+	default:
+		return "fill-chart-6"
+	}
+}
+
+func enrollmentBackground(slot int) string {
+	switch slot {
+	case 1:
+		return "bg-chart-1"
+	case 2:
+		return "bg-chart-2"
+	case 3:
+		return "bg-chart-3"
+	case 4:
+		return "bg-chart-4"
+	case 5:
+		return "bg-chart-5"
+	default:
+		return "bg-chart-6"
+	}
+}
+
+// enrollmentLegendClass dims a method that issued nothing, so the eye does not
+// go hunting the plot for a line that is honestly not there.
+func enrollmentLegendClass(series EnrollmentSeries) string {
+	class := "flex items-center gap-2 text-xs"
+	if series.Total == 0 {
+		class += " opacity-55"
+	}
+	return class
+}
+
+// enrollmentSummary is the graph's accessible name. It leads with the figure
+// rather than describing the chart, because the figure is what someone came to
+// the overview for.
+func enrollmentSummary(chart EnrollmentChart) string {
+	return chart.TotalLabel() + " issued " + chart.RangeLabel() + ", by enrollment method."
+}
+
+// enrollmentDescription is the same line under the card's title, and nothing at
+// all when there is no graph: the empty state already says the window was quiet,
+// and a header reading "0 certificates issued" directly above it says it twice.
+func enrollmentDescription(chart EnrollmentChart) string {
+	if !chart.HasData() {
+		return ""
+	}
+	return enrollmentSummary(chart)
+}

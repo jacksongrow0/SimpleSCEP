@@ -1,0 +1,7 @@
+package components
+
+templ Segment(props SegmentProps) {
+	<button { mergeAttrs(segmentClass("segment", props.Active), withDefault(withDefault(props.Attrs, "type", "button"), "aria-pressed", boolString(props.Active)))... }>
+		{ children... }
+	</button>
+}

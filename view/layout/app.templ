@@ -1,0 +1,344 @@
+package layout
+
+import (
+	"strings"
+
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+)
+
+type Session struct {
+	UserID, Name, Role, OrganizationName string
+}
+
+func (s Session) IsAdmin() bool { return s.Role == "administrator" }
+func (s Session) CanManageCertificates() bool {
+	return s.Role == "administrator" || s.Role == "certificate_manager"
+}
+func (s Session) CanViewAudit() bool { return s.Role == "administrator" || s.Role == "auditor" }
+
+templ App(title string, active string, session Session) {
+	@Base(title + " · SimpleSCEP") {
+		<div class="mobile-bar hidden max-lg:sticky max-lg:top-0 max-lg:z-30 max-lg:grid max-lg:grid-cols-[minmax(0,1fr)_auto] max-lg:items-center max-lg:gap-2 max-lg:border-b max-lg:border-border max-lg:bg-sidebar max-lg:px-4 max-lg:py-3 max-lg:[&>div]:flex max-lg:[&>div]:shrink-0 max-lg:[&>div]:items-center max-lg:[&>div]:gap-2">
+			@Logo()
+			<div>
+				@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonIcon, Attrs: templ.Attributes{"data-dialog": "search-dialog", "data-script": "on click call document.getElementById(my @data-dialog).showModal()", "aria-label": "Go to"}}) {
+					@c.Icon("search")
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonIcon, Attrs: templ.Attributes{"class": "mobile-toggle", "data-script": "on click toggle .open on .sidebar", "aria-label": "Toggle navigation"}}) {
+					@c.Icon("menu")
+				}
+			</div>
+		</div>
+		<div class="shell flex min-h-screen">
+			<aside class="sidebar sticky top-0 z-40 flex h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:max-w-[85vw] max-lg:-translate-x-full max-lg:transition-transform max-lg:duration-200 max-lg:[&.open]:translate-x-0">
+				<div class="sidebar-head flex items-center border-b border-sidebar-border px-6 py-5">
+					@Logo()
+				</div>
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"class": "search-button mx-3 mt-3 w-[calc(100%-24px)] justify-start rounded-lg border-sidebar-border bg-sidebar-accent/40 text-muted-foreground hover:text-foreground [&_span]:ml-auto [&_span]:shrink-0 [&_span]:rounded [&_span]:border [&_span]:border-sidebar-border [&_span]:px-1.5 [&_span]:py-0.5 [&_span]:text-[10px]", "data-dialog": "search-dialog", "data-script": "on click call document.getElementById(my @data-dialog).showModal()"}}) {
+					⌕ &nbsp; Go to… <span>⌘K</span>
+				}
+				<nav class="nav flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-4 [&_a]:flex [&_a]:w-full [&_a]:items-center [&_a]:gap-3 [&_a]:rounded-lg [&_a]:px-3 [&_a]:py-2 [&_a]:text-sm [&_a]:text-sidebar-foreground/80 [&_a]:transition-[background-color,color] [&_a]:duration-150 [&_a:hover]:bg-sidebar-accent/60 [&_a:hover]:text-sidebar-foreground [&_a.active]:bg-sidebar-accent [&_a.active]:text-sidebar-accent-foreground [&_a.active_svg]:text-primary" data-script="on click from <a/> remove .open from .sidebar">
+					@Nav("/", "overview", "layout-dashboard", "Overview", active)
+					@Nav("/certificate-authorities", "cas", "shield-check", "Certificate Authorities", active)
+					@Nav("/certificates", "certificates", "file-key", "Certificates", active)
+					@Nav("/revocation", "revocation", "shield-off", "Revocation & OCSP", active)
+					@Nav("/protocols", "protocols", "radio", "SCEP · ACME · EST", active)
+					if session.IsAdmin() {
+						@Nav("/users", "users", "users", "Users", active)
+						@Nav("/organization", "organization", "building-2", "Organization", active)
+					}
+					if session.CanViewAudit() {
+						@Nav("/audit", "audit", "scroll-text", "Audit log", active)
+					}
+					// Second-factor management is not here. It is the one part of this
+					// nav that was a person's settings rather than an organization's,
+					// and it now lives in the account dialog with the rest of them.
+					@Nav("/support", "support", "life-buoy", "Support", active)
+					<div class="mt-auto px-3 pt-4 text-xs text-muted-foreground [&_a]:inline [&_a]:w-auto [&_a]:p-0 [&_a]:text-xs [&_a]:text-muted-foreground [&_a:hover]:bg-transparent [&_a:hover]:text-foreground">
+						<a href={ RepositoryURL } target="_blank" rel="noopener">Open source on GitHub</a>
+					</div>
+				</nav>
+				<div class="account relative border-t border-sidebar-border p-3">
+					<div class="user-menu-wrap relative">
+						@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"id": "user-menu-toggle", "class": "user-card h-auto w-full justify-start rounded-lg p-2 text-left text-inherit hover:bg-sidebar-accent/60 [&>div:nth-child(2)]:min-w-0 [&>div:nth-child(2)]:flex-1 [&_strong]:block [&_strong]:truncate [&_small]:block [&_small]:truncate [&_small]:text-xs [&_small]:text-muted-foreground [&>svg]:text-muted-foreground", "data-menu": "user-menu", "data-script": userMenuToggleScript, "aria-haspopup": "menu", "aria-expanded": "false"}}) {
+							<div class="avatar grid size-9 shrink-0 place-items-center rounded-full bg-primary/15 text-sm font-semibold text-primary">{ initial(session.Name) }</div>
+							<div><strong>{ session.Name }</strong><small>{ roleName(session.Role) }</small></div>
+							@c.Icon("chevron-up")
+						}
+						<div id="user-menu" class="user-menu absolute bottom-[calc(100%+8px)] left-0 z-[60] w-full rounded-[10px] border border-border bg-popover p-1.5 shadow-[0_16px_40px_#0008] [&_button]:flex [&_button]:w-full [&_button]:cursor-pointer [&_button]:items-center [&_button]:gap-2.5 [&_button]:rounded-md [&_button]:border-0 [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:py-2 [&_button]:text-left [&_button]:text-foreground [&_button:hover]:bg-accent [&_.sign-out]:text-destructive" role="menu" data-script={ userMenuDismissScript } hidden>
+							<div class="user-menu-label truncate px-2.5 py-1.5 text-[11px] text-muted-foreground">{ session.OrganizationName }</div>
+							@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"class": "h-auto w-full justify-start px-2.5 py-2", "type": "button", "role": "menuitem", "data-dialog": "user-dialog", "data-script": userSettingsOpenScript}}) {
+								@c.Icon("settings")
+								<span>Settings</span>
+							}
+							<form method="post" action="/logout">
+								@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"class": "sign-out h-auto w-full justify-start px-2.5 py-2 text-destructive", "type": "submit", "role": "menuitem"}}) {
+									@c.Icon("log-out")
+									<span>Log out</span>
+								}
+							</form>
+						</div>
+					</div>
+				</div>
+			</aside>
+			<div class="workspace min-w-0 flex-1">
+				<main class="content mx-auto w-full max-w-[1400px] p-10 max-lg:px-4 max-lg:py-6">
+					<div class="page-title mb-6 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 [&>div]:min-w-0 [&>div>div]:truncate [&>div>div]:text-xs [&>div>div]:uppercase [&>div>div]:tracking-[.1em] [&>div>div]:text-muted-foreground [&_h1]:mt-1 [&_h1]:mb-0 [&_h1]:truncate [&_h1]:text-[30px] [&_h1]:leading-[1.2] [&_h1]:font-bold [&_h1]:tracking-[-.025em] max-lg:[&_h1]:text-2xl">
+						<div><div>{ organizationLabel(session) }</div><h1>{ title }</h1></div>
+					</div>
+					{ children... }
+				</main>
+			</div>
+		</div>
+		@SearchDialog()
+		@UserDialog(session)
+		@StepUpDialog()
+		// Loaded on every authenticated page because the account dialog is on
+		// every authenticated page, and passkey registration lives inside it.
+		// It used to be emitted only by the second-factor prompt and the Security
+		// page, which is no longer a page; the alternative — emitting it with the
+		// swapped-in panel — re-executes the file on each refresh and binds the
+		// ceremony handlers twice.
+		<script src="/static/mfa.js?v=20260822-1" defer></script>
+	}
+}
+
+// Logo is the wordmark, everywhere it appears: the sidebar, the mobile bar, and
+// the card on every page that has no sidebar yet.
+//
+// It is the file the brand ships rather than a hand-drawn approximation. What
+// stood here was an inline <svg> of a vaguely S-shaped path beside the word
+// "SimpleSCEP" in bold — close enough to pass unnoticed, and not the mark on the
+// marketing site, the favicon, or anything else a customer had already seen.
+//
+// horizontal-dark.svg is the variant drawn for a dark ground: its wordmark is
+// near-white, which is what this application needs on every surface it is used
+// on, all of which are dark. Swapping in the light variant means adding one,
+// not editing this.
+//
+// An <img> rather than the file's markup inlined. It is 45KB of path data, the
+// sidebar and the mobile bar both render it on every page, and as a file the
+// browser fetches it once and caches it instead of carrying it in every
+// response. The alt text is the name, so a reader who cannot see it still lands
+// on "SimpleSCEP" and not on "logo".
+templ Logo() {
+	<a class="logo flex h-8 items-center" href="/">
+		// width and height are the file's intrinsic 1142×177, so the row keeps
+		// its space and nothing reflows when the image lands. fetchpriority is
+		// high because this is the one image above the fold on every page.
+		//
+		// The attributes are one per line and the comment is above the tag: templ
+		// cannot parse a comment inside an attribute list, and the failure is
+		// quiet — the watcher stops regenerating this file, go build keeps
+		// compiling the stale _templ.go, and the page serves the previous
+		// version of this component with no error anywhere.
+		<img
+			src="/assets/logos/horizontal-dark.svg"
+			alt="SimpleSCEP"
+			width="1142"
+			height="177"
+			class="h-7 w-auto max-w-full"
+			decoding="async"
+			fetchpriority="high"
+		/>
+	</a>
+}
+
+templ Nav(href string, id string, icon string, label string, active string) {
+	<a href={ href } class={ activeClass(id, active) }>
+		@c.Icon(icon)
+		<span>{ label }</span>
+	</a>
+}
+
+// QuickJump is the ⌘K dialog. It is navigation, and it says so.
+//
+// It used to be titled "Search SimpleSCEP" over an input placeheld "Search
+// certificates, CAs, users, or pages…" — with no name, no form, no hx-get and no
+// handler anywhere. Typing into it did nothing, on every authenticated page in
+// the product, which made it the most visible broken control here.
+//
+// Rather than ship a search backend to justify the box, the box is gone and what
+// the dialog actually does is what it now claims. Real search over certificate
+// subjects and serials is worth building; it is not worth pretending to have.
+templ SearchDialog() {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "search-dialog", "class": "max-w-[620px]", "data-script": "on keydown[(event.metaKey or event.ctrlKey) and event.key.toLowerCase() is 'k'] from document halt then open me end on click if target is me close me end"}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: "Go to", Description: "Jump to a product area."})
+		@c.DialogBody(nil) {
+			<div class="steps flex flex-col gap-3"><a class="step flex items-start gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&>div]:min-w-0 [&>div]:flex-1 [&_strong]:font-medium [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground" href="/certificate-authorities"><span class="step-num grid size-6 shrink-0 place-items-center rounded-full bg-secondary font-bold">◆</span><div><strong>Certificate Authorities</strong><p>Trust anchors and issuing CAs</p></div></a><a class="step flex items-start gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&>div]:min-w-0 [&>div]:flex-1 [&_strong]:font-medium [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground" href="/certificates"><span class="step-num grid size-6 shrink-0 place-items-center rounded-full bg-secondary font-bold">▤</span><div><strong>Certificates</strong><p>Server, client, and CSR inventory</p></div></a><a class="step flex items-start gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&>div]:min-w-0 [&>div]:flex-1 [&_strong]:font-medium [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground" href="/protocols"><span class="step-num grid size-6 shrink-0 place-items-center rounded-full bg-secondary font-bold">◉</span><div><strong>Enrollment protocols</strong><p>SCEP, ACME, and EST endpoints</p></div></a><a class="step flex items-start gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&>div]:min-w-0 [&>div]:flex-1 [&_strong]:font-medium [&_p]:mt-0.5 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground" href="/revocation"><span class="step-num grid size-6 shrink-0 place-items-center rounded-full bg-secondary font-bold">⊘</span><div><strong>Revocation &amp; OCSP</strong><p>CRL publication and responder status</p></div></a></div>
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Close
+			}
+		}
+	}
+}
+
+// StepUpDialog asks for a confirmation when middleware.StepUp refuses a
+// destructive action, then re-fires the request that was refused.
+//
+// The re-fire is what makes the grace usable: without it the user confirms, the
+// dialog closes, and they are back on the page they started from wondering
+// whether the delete happened. The middleware sends the action wording and the
+// path to retry in an HX-Trigger header, so the prompt names what is about to
+// happen rather than asking for a code with no context.
+//
+// It asks for a confirmation rather than for a code. Which methods a person can
+// use is a fact about that person — held passkeys, held authenticators — so the
+// prompt fetches them when it opens instead of assuming the one method everyone
+// is guaranteed to have.
+//
+// The Security tab does not come through here any more. It is a tab inside a
+// dialog that is already open, so this one opened on top of it; that route
+// draws the same prompt inline where the panel goes. See internal/auth's
+// securityPanel and the note in middleware.stepUpPatterns.
+templ StepUpDialog() {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{
+		"id":    "step-up-dialog",
+		"class": "max-w-[460px]",
+		// Both features on the dialog itself. The replay half used to sit on
+		// the form, and the form is now fetched — a data-script on swapped-in
+		// content is never installed. htmx:afterRequest bubbles from whatever
+		// made the request, so a listener on the dialog catches it however new
+		// the form is.
+		"data-script": stepUpDialogScript + " " + stepUpFormScript,
+	}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: "Confirm it's you"})
+		@c.DialogBody(nil) {
+			<p class="mb-3 text-sm text-muted-foreground">
+				Confirm it's you to <span id="step-up-action">continue</span>.
+			</p>
+			// Outside the fetched fragment: the stepup event writes these
+			// before the fragment arrives, and the replay reads them after it
+			// has been swapped.
+			<input type="hidden" id="step-up-retarget" name="retarget"/>
+			<input type="hidden" id="step-up-method"/>
+			// Fetched when the prompt opens, for two reasons. The list costs
+			// two queries and this shell is on every authenticated page, so
+			// they run only for the person actually being asked. And the
+			// answer differs per person: this used to be a code field and
+			// nothing else, so someone who holds a passkey and signs in with
+			// one was still sent to find their authenticator app every time.
+			<div
+				id="step-up-methods"
+				hx-get="/security/step-up/methods"
+				hx-trigger="stepup from:document"
+				hx-swap="innerHTML"
+			>
+				<p class="m-0 text-sm text-muted-foreground">Loading your confirmation methods…</p>
+			</div>
+			<p id="step-up-result" class="mt-2 text-sm text-destructive" aria-live="polite"></p>
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Close
+			}
+		}
+	}
+}
+
+// UserDialog is everything a person manages about their own account: who they
+// are, what this organization emails them about, and how they prove they are
+// them.
+//
+// Two tabs rather than one column, and wider than the default dialog, because
+// the second factor moved in here from a full-width page of its own and does not
+// fit beside a preferences form. --dialog-w is the width knob c.Dialog documents;
+// a max-w- class alone would not widen it, since the width itself is min(32rem,
+// …) and a cap above that changes nothing.
+templ UserDialog(session Session) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "user-dialog", "style": "--dialog-w: 52rem"}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: "Account settings", Description: session.Name + " · " + roleName(session.Role)})
+		@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+			@c.Tabs(templ.Attributes{"aria-label": "Account settings sections"}) {
+				@c.Tab(c.SegmentProps{Active: true, Attrs: templ.Attributes{
+					"id": "user-tab-account", "class": "user-tab", "data-script": tabScript("panel-account")}}) {
+					Account
+				}
+				@c.Tab(c.SegmentProps{Attrs: templ.Attributes{
+					"id": "user-tab-security", "class": "user-tab", "data-script": securityTabScript(),
+					// Loading the panel is the boundary that asks for a fresh
+					// second factor. Account settings open without interruption;
+					// Security becomes usable immediately after confirmation.
+					"hx-get": "/security/panel", "hx-target": "#security-panel",
+					"hx-swap": "outerHTML",
+				}}) {
+					Security
+				}
+			}
+			<div id="panel-account" class="user-tab-panel grid gap-4">
+				@c.Card(c.CardProps{}) {
+					@c.CardHeader(c.CardHeaderProps{Title: "Profile", Icon: "users",
+						Description: "How you appear to the rest of " + organizationLabel(session) + ", and in the audit log."})
+					@c.CardBody(nil) {
+						<form
+							id="profile-form"
+							method="post"
+							action="/settings/profile"
+							hx-post="/settings/profile"
+							class="grid gap-3 sm:max-w-sm"
+						>
+							@c.Field(c.FieldProps{Label: "Your name"}) {
+								@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name",
+									"value": session.Name, "maxlength": "255", "required": true,
+									"autocomplete": "name"}})
+							}
+							@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+								Save name
+							}
+						</form>
+					}
+				}
+			</div>
+			// Replaced by auth.SecurityPanel when the dialog is opened. It is a
+			// placeholder rather than server-rendered content because this shell is
+			// on every authenticated page, and the panel's queries are only worth
+			// running for someone who is actually looking at it.
+			//
+			// This package cannot render the panel itself in any case: view/auth
+			// imports view/layout, so the dependency only runs one way.
+			<div id="panel-security" class="user-tab-panel grid gap-4" hidden>
+				<div id="security-panel" class="grid gap-4">
+					<p class="text-sm text-muted-foreground">Loading your security settings…</p>
+				</div>
+			</div>
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Close
+			}
+		}
+	}
+}
+
+func activeClass(id, active string) string {
+	if id == active {
+		return "active"
+	}
+	return ""
+}
+func initial(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "U"
+	}
+	return strings.ToUpper(name[:1])
+}
+func roleName(role string) string {
+	switch role {
+	case "certificate_manager":
+		return "Certificate Manager"
+	case "auditor":
+		return "Certificate Auditor"
+	default:
+		return "Administrator"
+	}
+}
+func organizationLabel(session Session) string {
+	name := session.OrganizationName
+	if name == "" {
+		name = "Your organization"
+	}
+	return name
+}

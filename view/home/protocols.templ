@@ -1,0 +1,865 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strconv"
+	"time"
+)
+
+type ProtocolEndpoint struct {
+	ID, Name, CAName, URL, JamfWebhookURL string
+	SubjectPattern, SANPattern            string
+	RAFingerprint, CAFingerprint          string
+	Enabled, Legacy                       bool
+	ValidityDays, RenewalWindowDays       int
+	// APIBase is this endpoint's administration prefix, so the forms below
+	// concatenate rather than each learning how to build the path.
+	APIBase string
+	// LiveCertificates is how many certificates this endpoint issued that are
+	// still neither revoked nor expired — the devices that would be affected by
+	// deleting it.
+	LiveCertificates int
+	// EKUs is every usage the endpoint may be allowed to offer, each marked
+	// with whether it is currently permitted and whether the issuing CA's own
+	// profile can carry it at all.
+	EKUs []ProtocolEKU
+}
+
+// ProtocolEndpointRow is one endpoint on the list page.
+type ProtocolEndpointRow struct {
+	ID, Name, CAName, Path string
+	Enabled                bool
+	EnabledMethods         int
+	RecentIssued           int
+}
+
+// ProtocolIntune is the organization's single Microsoft Entra directory, which
+// every one of its endpoints enrols through.
+type ProtocolIntune struct {
+	Connected   bool
+	TenantID    string
+	ConnectedAt time.Time
+}
+
+// ProtocolEndpointData is one endpoint's administration page.
+type ProtocolEndpointData struct {
+	Endpoint     ProtocolEndpoint
+	Methods      []ProtocolAuthMethod
+	Transactions []ProtocolTransaction
+}
+
+// ProtocolEKU is one extended key usage on the issuance policy form. Available
+// is false when the issuing CA's profile does not include the usage, in which
+// case it is shown disabled rather than hidden, so an administrator can see why
+// a usage they expected is not on offer.
+type ProtocolEKU struct {
+	Token, Label       string
+	Allowed, Available bool
+}
+
+// ProtocolAuthMethod is one enrollment authentication method on the single
+// endpoint. Blocked carries the reason the method cannot be turned on yet.
+type ProtocolAuthMethod struct {
+	Method, Label, Description, Detail, Blocked string
+	TenantID, Username                          string
+	Enabled, Configured                         bool
+	// NoSetup marks a method that stores no credentials, so there is nothing to
+	// configure and Configured is true from the moment the endpoint exists.
+	// Only one-time challenges are like this: the challenge is minted on demand
+	// into the challenge table and never touches the method's own row.
+	NoSetup bool
+}
+
+type ProtocolCA struct{ ID, Name string }
+
+type ProtocolTransaction struct {
+	ID, Status, Type, Authorization, Reason string
+	CreatedAt                               time.Time
+}
+
+type ProtocolPage struct {
+	// IntuneError reports a failed Entra consent, which returns as a full-page
+	// navigation and so cannot be swapped into a form's result target.
+	IntuneError string
+	Intune      ProtocolIntune
+	Endpoints   []ProtocolEndpointRow
+	CAs         []ProtocolCA
+	// ACME and EST are the other protocols' panels. Every tab renders from one
+	// page load, because the tabs are client-side only — there is no URL state
+	// and no second request when one is selected.
+	ACME ACMEPage
+	EST  ESTPage
+}
+
+templ Protocols(session auth.Session, data ProtocolPage) {
+	@layout.App("SCEP · ACME · EST", "protocols", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			@c.Card(c.CardProps{Attrs: templ.Attributes{"data-tabs": true, "data-script": "on click set tab to the closest <[data-tab]/> to target then if tab take .active from <[data-tab]/> in me for tab then add @hidden to <[data-panel]/> in me when its @data-panel is not (tab's @data-tab) end"}}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Enrollment protocols", Description: protocolHeaderCopy(), Icon: "radio"})
+				@c.CardBody(nil) {
+					@c.Tabs(templ.Attributes{"class": "protocol-tabs mb-4 [&_.tab]:inline-flex [&_.tab]:items-center [&_.tab]:gap-1.5 [&_.tab_svg]:size-3"}) {
+						@c.Tab(c.SegmentProps{Active: true, Attrs: templ.Attributes{"data-tab": "scep"}}) {
+							<span>SCEP</span>
+						}
+						@c.Tab(c.SegmentProps{Attrs: templ.Attributes{"data-tab": "acme"}}) {
+							<span>ACME</span>
+						}
+						@c.Tab(c.SegmentProps{Attrs: templ.Attributes{"data-tab": "est"}}) {
+							<span>EST</span>
+						}
+					}
+					<div class="tab-panel mt-0" data-panel="scep">
+						if !session.IsAdmin() {
+							@c.EmptyState(c.EmptyStateProps{Icon: "lock", Title: "Administrators only", Description: "Ask an administrator to configure SCEP enrollment for your organization.", Compact: true, Muted: true})
+						} else {
+							@SCEPPanel(data)
+						}
+					</div>
+					<div class="tab-panel mt-0" data-panel="acme" hidden>
+						if !session.IsAdmin() {
+							@c.EmptyState(c.EmptyStateProps{Icon: "lock", Title: "Administrators only", Description: "Ask an administrator to configure ACME enrollment for your organization.", Compact: true, Muted: true})
+						} else {
+							@ACMEPanel(data.ACME)
+						}
+					</div>
+					<div class="tab-panel mt-0" data-panel="est" hidden>
+						if !session.IsAdmin() {
+							@c.EmptyState(c.EmptyStateProps{Icon: "lock", Title: "Administrators only", Description: "Ask an administrator to configure EST enrollment for your organization.", Compact: true, Muted: true})
+						} else {
+							@ESTPanel(data.EST)
+						}
+					</div>
+				}
+			}
+		</div>
+	}
+}
+
+templ SCEPPanel(data ProtocolPage) {
+	<div class="stack flex flex-col gap-6">
+		if data.IntuneError != "" {
+			@ConnectionError(data.IntuneError)
+		}
+		@IntuneConnectionCard(data.Intune)
+		if len(data.Endpoints) == 0 {
+			@c.EmptyState(c.EmptyStateProps{Icon: "radio", Title: "No SCEP endpoints yet", Description: "An endpoint is one enrollment URL bound to an issuing CA, with its own issuance policy and authentication. Create one per device population you police differently.", Compact: true, Muted: true}) {
+				if len(data.CAs) == 0 {
+					<p class="text-sm text-muted-foreground">Create an active issuing CA first.</p>
+					@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+						<span>Go to Certificate Authorities</span>@c.Icon("arrow-up-right")
+					}
+				} else {
+					@c.Button(c.ButtonProps{Attrs: templ.Attributes{"data-script": "on click call document.getElementById('setup-dialog').showModal()"}}) {
+						@c.Icon("plus")
+						<span>Add endpoint</span>
+					}
+				}
+				<p class="mt-3 text-sm text-muted-foreground">
+					<a href={ templ.SafeURL(layout.DocsSCEPURL) } target="_blank" rel="noopener" class="underline underline-offset-2">Read the SCEP setup guide</a>
+				</p>
+			}
+		} else {
+			@EndpointList(data)
+		}
+	</div>
+	@SetupDialog(data.CAs)
+}
+
+templ EndpointList(data ProtocolPage) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">SCEP endpoints</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Each endpoint is its own URL, issuing CA, issuance policy, and set of enrollment authentication methods.</p>
+			</div>
+			if len(data.CAs) > 0 {
+				@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"data-script": "on click call document.getElementById('setup-dialog').showModal()"}}) {
+					@c.Icon("plus")
+					<span>Add endpoint</span>
+				}
+			}
+		</div>
+		<div class="mt-4 overflow-x-auto">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="text-left text-muted-foreground">
+						<th class="py-2 pr-4 font-medium">Name</th>
+						<th class="py-2 pr-4 font-medium">Issuing CA</th>
+						<th class="py-2 pr-4 font-medium">Status</th>
+						<th class="py-2 pr-4 font-medium">Methods on</th>
+						<th class="py-2 font-medium">Issued (30d)</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, e := range data.Endpoints {
+						<tr class="border-t border-border">
+							<td class="py-2 pr-4">
+								<a href={ templ.SafeURL(e.Path) } class="font-medium underline-offset-2 hover:underline">{ e.Name }</a>
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ e.CAName }</td>
+							<td class="py-2 pr-4">
+								if e.Enabled {
+									@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+										On
+									}
+								} else {
+									@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+										Off
+									}
+								}
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ strconv.Itoa(e.EnabledMethods) }</td>
+							<td class="py-2 text-muted-foreground">{ strconv.Itoa(e.RecentIssued) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+
+// IntuneConnectionCard shows the organization's Entra directory. It is
+// connected once and shared by every endpoint, which is why it lives on this
+// page rather than on any one endpoint's authentication list.
+templ IntuneConnectionCard(intune ProtocolIntune) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<div class="flex items-center gap-2">
+					<h4 class="m-0 font-bold">Microsoft Entra directory</h4>
+					if intune.Connected {
+						@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+							Connected
+						}
+					} else {
+						@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+							Not connected
+						}
+					}
+				</div>
+				if intune.Connected {
+					<p class="mt-1 mb-0 text-sm text-muted-foreground">
+						Tenant { intune.TenantID } · connected { intune.ConnectedAt.UTC().Format("2 Jan 2006") }. Every endpoint may enroll through it; turn Microsoft Intune on per endpoint.
+					</p>
+				} else {
+					<p class="mt-1 mb-0 text-sm text-muted-foreground">Connect your directory once and any endpoint can use Microsoft Intune for enrollment authentication. A user with sufficient permissions has to grant consent.</p>
+				}
+			</div>
+			if intune.Connected {
+				@ConnectForm("/api/scep/intune/disconnect", "intune-error", c.ButtonOutline) {
+					Disconnect
+				}
+			} else {
+				@c.Button(c.ButtonProps{Variant: c.ButtonPrimary, Size: c.ButtonSmall, Attrs: templ.Attributes{"data-script": "on click call document.getElementById('intune-consent-dialog').showModal()"}}) {
+					Connect
+				}
+			}
+		</div>
+		<p id="intune-error" class="mt-2 mb-0 text-sm text-muted-foreground"></p>
+		if !intune.Connected {
+			@IntuneConsentDialog()
+		}
+	</div>
+}
+
+// IntuneConsentDialog names the three permissions before the administrator is
+// handed to Microsoft. Entra's consent screen is Microsoft's own page and
+// accepts no text from the publisher, so this is the only place "Read all
+// applications" can be explained to someone deciding whether to grant it. The
+// link matters as much as the wording: it is Microsoft, not us, instructing
+// every third-party SCEP CA to ask for that permission.
+templ IntuneConsentDialog() {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "intune-consent-dialog"}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: "Required Microsoft Permissions",
+			Description: "Microsoft requires these permissions from your Azure tenant to issue SCEP certificates:"})
+		@c.DialogBody(templ.Attributes{"class": "grid text-sm"}) {
+			<div class="flex items-start">
+				<div>
+					<p class="m-0 font-semibold">SCEP challenge validation</p>
+					<p class="mt-0.5 mb-0 text-muted-foreground">Confirms with Intune that an enrollment request carries a challenge Intune issued for that device.</p>
+				</div>
+			</div>
+			<div class="flex items-start">
+				<div>
+					<p class="m-0 font-semibold">Read all applications</p>
+					<p class="mt-0.5 mb-0 text-muted-foreground">
+						Required by Microsoft — every SCEP authority must request it, to find the Intune service URL for your tenant. Read-only, and it cannot read secrets or change anything.
+						<a href="https://learn.microsoft.com/en-us/intune/fundamentals/certificates/third-party-ca-scep#:~:text=Expand%20Application%20and%20select%20the%20checkbox%20for%20Application.Read.All%20(Read%20all%20applications)." target="_blank" rel="noopener noreferrer" class="underline underline-offset-2">Microsoft's setup guide</a>
+					</p>
+				</div>
+			</div>
+			<div class="flex items-start">
+				<div>
+					<p class="m-0 font-semibold">View users' basic profile</p>
+					<p class="mt-0.5 mb-0 text-muted-foreground">Identifies which directory you signed in from, so the connection binds to your tenant and no other.</p>
+				</div>
+			</div>
+			<p id="intune-consent-error" class="m-0 text-sm text-destructive"></p>
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Cancel
+			}
+			@ConnectForm("/api/scep/intune/connect", "intune-consent-error", c.ButtonPrimary) {
+				Proceed
+			}
+		}
+	}
+}
+
+templ EndpointSummary(e ProtocolEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<div class="flex items-center gap-2">
+					<h4 class="m-0 font-bold">{ e.Name }</h4>
+					if e.Enabled {
+						@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+							Accepting enrollments
+						}
+					} else {
+						@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+							Off
+						}
+					}
+				</div>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Every device pointed at this URL enrolls through it, whichever MDM sends them. Issuing CA: { e.CAName }.</p>
+			</div>
+			@ToggleForm(e.APIBase+"/enabled", "endpoint-error", e.Enabled, "")
+		</div>
+		<div class="mt-4 grid gap-2">
+			<div class="flex items-center justify-between gap-2">
+				<span class="text-sm font-medium">Endpoint URL</span>
+				<div class="flex items-center gap-2">
+					@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-value": e.URL, "data-script": "on click call navigator.clipboard.writeText(my @data-value) then call toast('success', 'Copied to clipboard')"}}) {
+						@c.Icon("copy")
+						<span>Copy</span>
+					}
+					<form method="get" action={ templ.SafeURL(e.APIBase + "/ca") } class="flex items-center gap-1.5">
+						<div class="w-40">
+							@c.Select(templ.Attributes{"name": "format", "class": "h-8 px-2 text-xs", "aria-label": "CA bundle format"}) {
+								<option value="">SCEP bundle (.p7b)</option>
+								<option value="pem">PEM (.pem)</option>
+								<option value="crt">CRT (.crt)</option>
+								<option value="cer">CER, DER (.cer)</option>
+							}
+						</div>
+						@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+							@c.Icon("download")
+							<span>CA bundle</span>
+						}
+					</form>
+				</div>
+			</div>
+			<pre class="m-0 overflow-auto rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3 text-xs">{ e.URL }</pre>
+		</div>
+		<div class="mt-4 grid gap-4 grid-cols-2 max-md:grid-cols-1">
+			@c.Info("CA SHA-256 fingerprint", e.CAFingerprint)
+			@c.Info("RA SHA-256 fingerprint", e.RAFingerprint)
+		</div>
+		<p id="endpoint-error" class="mt-3 mb-0 text-sm"></p>
+	</div>
+}
+
+// ConnectionError reports a failure that happened while the administrator was
+// away at another site, so it arrives on a fresh page load rather than in an
+// htmx swap target.
+templ ConnectionError(message string) {
+	<div class="rounded-xl border border-warning bg-[color-mix(in_oklch,var(--color-warning)_12%,transparent)] p-4">
+		<div class="flex items-start gap-2">
+			@c.Icon("triangle-alert")
+			<div>
+				<h4 class="m-0 font-bold">Microsoft Intune was not connected</h4>
+				<p class="mt-1 mb-0 text-sm">{ message }</p>
+			</div>
+		</div>
+	</div>
+}
+
+templ AuthMethodList(methods []ProtocolAuthMethod, apiBase string) {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">Enrollment authentication</h4>
+		<p class="mt-1 mb-0 text-sm text-muted-foreground">Turn on every source that enrolls devices. The challenge password a device presents decides which one applies, so they can all run at once.</p>
+		<div class="mt-4 grid gap-3">
+			for _, m := range methods {
+				@AuthMethodRow(m, apiBase)
+			}
+		</div>
+		<p id="method-error" class="mt-3 mb-0 text-sm"></p>
+	</div>
+}
+
+templ AuthMethodRow(m ProtocolAuthMethod, apiBase string) {
+	<div class="flex items-center justify-between gap-4 rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3">
+		<div class="min-w-0">
+			<div class="flex flex-wrap items-center gap-2">
+				<strong class="font-medium">{ m.Label }</strong>
+				@c.Pill(c.PillProps{Tone: methodStatusTone(m)}) {
+					{ methodStatusLabel(m) }
+				}
+			</div>
+			<p class="mt-0.5 mb-0 text-sm text-muted-foreground">{ m.Description }</p>
+			if m.Detail != "" {
+				<p class="mt-0.5 mb-0 font-mono text-xs text-muted-foreground">{ m.Detail }</p>
+			}
+			if m.Blocked != "" {
+				<p class="mt-0.5 mb-0 text-xs text-warning">{ m.Blocked }</p>
+			}
+		</div>
+		<div class="flex shrink-0 items-center gap-2">
+			@AuthMethodAction(m)
+			@ToggleForm(apiBase+"/auth/"+m.Method+"/enabled", "method-error", m.Enabled, m.Blocked)
+		</div>
+	</div>
+}
+
+// AuthMethodAction is the configure control for one method. Intune is the
+// exception: the directory is connected once for the whole organization, so
+// this row links to where that happens rather than offering to disconnect it —
+// disconnecting from one endpoint would silently break every sibling.
+templ AuthMethodAction(m ProtocolAuthMethod) {
+	if m.Method == "intune" {
+		@c.ButtonLink(c.ButtonLinkProps{Href: "/protocols", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall}}) {
+			if m.Configured {
+				<span>Manage directory</span>
+			} else {
+				<span>Connect directory</span>
+			}
+			@c.Icon("arrow-up-right")
+		}
+	} else {
+		@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-dialog": m.Method + "-dialog", "data-script": "on click call document.getElementById(my @data-dialog).showModal()"}}) {
+			{ methodActionLabel(m) }
+		}
+	}
+}
+
+// ConnectForm posts as a real form so it works without JavaScript. A successful
+// connect answers with HX-Redirect out to Microsoft; only refusals swap into
+// the given error line, which differs by page — the connection card lives on
+// the endpoint list, where the method list's own error line does not exist.
+templ ConnectForm(action string, target string, variant c.ButtonVariant) {
+	<form method="post" action={ templ.SafeURL(action) } hx-post={ action } hx-target={ "#" + target } hx-swap="innerHTML">
+		@c.Button(c.ButtonProps{Variant: variant, Size: c.ButtonSmall}) {
+			{ children... }
+		}
+	</form>
+}
+
+// ToggleForm renders the on/off switch as a real form post so it works without
+// JavaScript, and swaps any refusal into the panel's error line via htmx.
+templ ToggleForm(action string, target string, on bool, blocked string) {
+	<form method="post" action={ templ.SafeURL(action) } hx-post={ action } hx-target={ "#" + target } hx-swap="innerHTML">
+		<input type="hidden" name="enabled" value={ strconv.FormatBool(!on) }/>
+		if blocked != "" && !on {
+			@c.Switch(templ.Attributes{"disabled": true, "aria-checked": "false", "title": blocked})
+		} else if on {
+			@c.Switch(templ.Attributes{"type": "submit", "aria-checked": "true", "aria-label": "Turn off", "class": "bg-primary after:translate-x-5 after:bg-primary-foreground after:transition-transform"})
+		} else {
+			@c.Switch(templ.Attributes{"type": "submit", "aria-checked": "false", "aria-label": "Turn on", "class": "after:transition-transform"})
+		}
+	</form>
+}
+
+templ IssuancePolicy(e ProtocolEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Issuance policy</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">What every certificate issued through this endpoint looks like, and which requests are accepted.</p>
+			</div>
+			@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('policy-dialog').showModal()"}}) {
+				Edit
+			}
+		</div>
+		<div class="mt-4 grid gap-4 grid-cols-4 max-md:grid-cols-2">
+			@c.Info("Validity", strconv.Itoa(e.ValidityDays)+" days")
+			@c.Info("Renewal window", strconv.Itoa(e.RenewalWindowDays)+" days")
+			@c.Info("Subject pattern", patternLabel(e.SubjectPattern))
+			@SANPatternInfo(e.SANPattern)
+		</div>
+		if e.Legacy {
+			<p class="mt-3 mb-0 text-sm text-warning">Legacy SHA-1/3DES compatibility is on. Turn it off once every enrolling device supports SHA-256.</p>
+		}
+	</div>
+}
+
+templ EnrollmentLog(transactions []ProtocolTransaction) {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">Recent enrollments</h4>
+		if len(transactions) == 0 {
+			<p class="mt-1 mb-0 text-sm text-muted-foreground">Nothing yet. Enrollments appear here as devices check in, including rejections and why they failed.</p>
+		} else {
+			<div class="mt-3 overflow-x-auto">
+				<table class="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_th]:border-b [&_th]:border-border [&_th]:p-2 [&_th]:text-left [&_th]:text-xs [&_th]:uppercase [&_th]:tracking-[.1em] [&_th]:text-muted-foreground [&_td]:border-b [&_td]:border-border [&_td]:p-2 [&_td]:align-top">
+					<thead><tr><th>Time</th><th>Type</th><th>Result</th><th>Method</th><th>Transaction</th></tr></thead>
+					<tbody>
+						for _, t := range transactions {
+							<tr>
+								<td class="whitespace-nowrap">{ t.CreatedAt.UTC().Format("2006-01-02 15:04:05Z") }</td>
+								<td>{ messageTypeLabel(t.Type) }</td>
+								<td>
+									if t.Status == "issued" {
+										@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+											Issued
+										}
+									} else {
+										@c.Pill(c.PillProps{Tone: c.ToneDestructive}) {
+											Failed
+										}
+										if t.Reason != "" {
+											<p class="mt-1 mb-0 text-xs text-muted-foreground">{ t.Reason }</p>
+										}
+									}
+								</td>
+								<td>{ authorizationLabel(t.Authorization) }</td>
+								<td class="font-mono text-xs break-all">{ t.ID }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</div>
+}
+
+templ SetupDialog(cas []ProtocolCA) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "setup-dialog"}}) {
+		<form method="post" action="/api/scep/endpoints" hx-post="/api/scep/endpoints" hx-target="#setup-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Add a SCEP endpoint", Description: "This creates an enrollment URL and its registration authority certificate. The issuing CA is fixed once created; everything else can change later."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "How you will recognize this endpoint, e.g. Corporate Wi-Fi. Up to 64 characters."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "placeholder": "Corporate Wi-Fi"}})
+				}
+				@c.Field(c.FieldProps{Label: "Issuing CA", Hint: "Every certificate enrolled through this endpoint is signed by this CA."}) {
+					@c.Select(templ.Attributes{"name": "ca_id", "required": true}) {
+						for _, ca := range cas {
+							<option value={ ca.ID }>{ ca.Name }</option>
+						}
+					}
+				}
+				<p id="setup-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Create endpoint
+				}
+			}
+		</form>
+	}
+}
+
+templ ChallengeDialog(e ProtocolEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "one_time-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/challenges") } hx-post={ e.APIBase + "/challenges" } hx-target="#challenge-dialog-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "One-time challenge", Description: "Generates a password that authorizes exactly one enrollment. Best for hand-enrolling a device or scripting your own workflow."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id="challenge-dialog-fields" class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Valid for (minutes)", Hint: "Up to 1440. Defaults to 15."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "ttl_minutes", "type": "number", "min": "1", "max": "1440", "value": "15"}})
+					}
+					@c.Field(c.FieldProps{Label: "Require this subject (optional)", Hint: "Exact RFC 2253 subject, e.g. CN=laptop-01,O=Acme. Leave blank to accept any subject allowed by the issuance policy."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "expected_subject", "placeholder": "CN=laptop-01,O=Acme"}})
+					}
+					@c.Field(c.FieldProps{Label: "Require these SANs (optional)", Hint: "Comma-separated, in CSR order."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "expected_sans", "placeholder": "laptop-01.acme.example"}})
+					}
+					@c.Field(c.FieldProps{Label: "Require these usages (optional)", Hint: "Tick none to accept anything the issuance policy allows. Ticking some pins this one enrollment to exactly those, so a challenge meant for S/MIME cannot produce a Wi-Fi certificate."}) {
+						<div class="grid gap-2 grid-cols-2 max-md:grid-cols-1">
+							for _, eku := range e.EKUs {
+								if eku.Allowed {
+									<label class="flex items-start gap-2 text-sm">
+										<input type="checkbox" name="expected_eku" value={ eku.Token }/>
+										<span>{ eku.Label }</span>
+									</label>
+								}
+							}
+						</div>
+					}
+				</div>
+				<div id="challenge-dialog-result"></div>
+			}
+			@c.DialogActions(templ.Attributes{"id": "challenge-dialog-actions"}) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Generate challenge
+				}
+			}
+		</form>
+	}
+}
+
+templ StaticDialog(apiBase string) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "static-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(apiBase + "/auth/static") } hx-post={ apiBase + "/auth/static" } hx-target="#static-dialog-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Shared secret", Description: "One password every device uses. Convenient for MDMs that cannot request a challenge per device, but any device holding it can enroll — prefer one-time challenges or Intune where you can."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id="static-dialog-fields">
+					<p class="m-0 text-sm text-muted-foreground">Generating a new secret immediately invalidates the previous one. Devices already holding a certificate keep it and renew normally.</p>
+				</div>
+				<div id="static-dialog-result"></div>
+			}
+			@c.DialogActions(templ.Attributes{"id": "static-dialog-actions"}) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Generate secret
+				}
+			}
+		</form>
+	}
+}
+
+templ JamfDialog(m ProtocolAuthMethod, webhookURL string, apiBase string) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "jamf-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(apiBase + "/auth/jamf") } hx-post={ apiBase + "/auth/jamf" } hx-target="#jamf-dialog-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Jamf Pro", Description: "Jamf Pro asks SimpleSCEP for a fresh challenge each time it enrolls a device, over a webhook secured with Basic authentication."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id="jamf-dialog-fields" class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Webhook username", Hint: "Any name you like; Jamf Pro sends it with each request."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "username", "value": jamfUsername(m), "placeholder": "simplescep"}})
+					}
+					<div class="grid gap-2">
+						<span class="text-sm font-medium">Webhook URL</span>
+						<pre class="m-0 overflow-auto rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3 text-xs">{ webhookURL }</pre>
+					</div>
+					<p class="m-0 text-sm text-muted-foreground">Saving generates a new password and invalidates the previous one. Jamf Pro mints one-time challenges, so keep that method on as well.</p>
+				</div>
+				<div id="jamf-dialog-result"></div>
+			}
+			@c.DialogActions(templ.Attributes{"id": "jamf-dialog-actions"}) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Generate password
+				}
+			}
+		</form>
+	}
+}
+
+templ PolicyDialog(e ProtocolEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "policy-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/policy") } hx-post={ e.APIBase + "/policy" } hx-target="#policy-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Issuance policy", Description: "SimpleSCEP issues exactly what the device asks for, so these patterns are the guardrail on what a device may ask for."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "Renaming does not change the endpoint URL, so enrolled devices are unaffected."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "value": e.Name}})
+				}
+				<div class="grid gap-4 grid-cols-2 max-md:grid-cols-1">
+					@c.Field(c.FieldProps{Label: "Validity (days)", Hint: "1 to 3650."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "validity_days", "type": "number", "required": true, "min": "1", "max": "3650", "value": strconv.Itoa(e.ValidityDays)}})
+					}
+					@c.Field(c.FieldProps{Label: "Renewal window (days)", Hint: "How close to expiry a device may renew."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "renewal_window_days", "type": "number", "required": true, "min": "1", "max": "365", "value": strconv.Itoa(e.RenewalWindowDays)}})
+					}
+				</div>
+				@c.Field(c.FieldProps{Label: "Subject pattern", Hint: "Regular expression the CSR subject must match. Leave blank to allow any subject."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "subject_pattern", "value": e.SubjectPattern, "placeholder": ".+"}})
+				}
+				@c.Field(c.FieldProps{Label: "SAN pattern", Hint: "Regular expression every subject alternative name must match. Leave blank to permit no SANs at all — or use .* to allow any."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_pattern", "value": e.SANPattern, "placeholder": ".*\\.acme\\.example"}})
+				}
+				@c.Field(c.FieldProps{Label: "Permitted extended key usages", Hint: "A device is issued the usages its request asks for, limited to these. A request that asks for none gets client authentication only. Usages absent from the issuing CA's profile cannot be offered."}) {
+					<div class="grid gap-2 grid-cols-2 max-md:grid-cols-1">
+						for _, eku := range e.EKUs {
+							<label class="flex items-start gap-2 text-sm">
+								if !eku.Available {
+									<input type="checkbox" disabled/>
+									<span class="text-muted-foreground">{ eku.Label } (not in CA profile)</span>
+								} else if eku.Allowed {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token } checked/>
+									<span>{ eku.Label }</span>
+								} else {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token }/>
+									<span>{ eku.Label }</span>
+								}
+							</label>
+						}
+					</div>
+				}
+				<label class="flex items-start gap-2 text-sm">
+					if e.Legacy {
+						<input type="checkbox" name="allow_legacy_crypto" checked/>
+					} else {
+						<input type="checkbox" name="allow_legacy_crypto"/>
+					}
+					<span>Accept legacy SHA-1 and 3DES clients. Only enable for old devices that cannot do SHA-256.</span>
+				</label>
+				<p id="policy-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Save policy
+				}
+			}
+		</form>
+	}
+}
+
+// ProtocolSecret renders a generated secret once, hiding the form that produced
+// it so the value cannot be regenerated by an accidental second submit.
+templ ProtocolSecret(dialogID string, label string, copy string, secret string, webhookURL string, returnURL string) {
+	<div class="grid gap-4" data-script={ "init add @hidden to #" + dialogID + "-fields then add @hidden to #" + dialogID + "-actions" }>
+		<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+			<span>
+				@c.Icon("circle-alert")
+			</span>
+			<div class="text-sm"><strong>Copy this now.</strong> { copy }</div>
+		</div>
+		if webhookURL != "" {
+			@SecretBlock("Webhook URL", webhookURL)
+		}
+		@SecretBlock(label, secret)
+		<div class="flex justify-end">
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '" + returnURL + "'"}}) {
+				Done
+			}
+		</div>
+	</div>
+}
+
+templ SecretBlock(label string, value string) {
+	<div class="grid gap-2">
+		<div class="flex items-center justify-between gap-2">
+			<span class="text-sm font-medium">{ label }</span>
+			@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-value": value, "data-script": "on click call navigator.clipboard.writeText(my @data-value) then call toast('success', 'Copied to clipboard')"}}) {
+				@c.Icon("copy")
+				<span>Copy</span>
+			}
+		</div>
+		<pre class="m-0 overflow-auto rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3 text-xs break-all whitespace-pre-wrap">{ value }</pre>
+	</div>
+}
+
+templ ProtocolError(message string) {
+	<span class="text-destructive">{ message }</span>
+}
+
+func protocolHeaderCopy() string {
+	return "Run as many endpoints as your populations need, each with its own issuing CA and issuance policy. SCEP serves Intune, Jamf, Workspace ONE, Ivanti, Kandji, Mosyle, and native device clients at the same time; ACME serves cert-manager, Caddy, Traefik, acme.sh, and lego; EST serves strongSwan, Cisco IOS, and IoT fleets."
+}
+
+func methodByName(methods []ProtocolAuthMethod, name string) ProtocolAuthMethod {
+	for _, m := range methods {
+		if m.Method == name {
+			return m
+		}
+	}
+	return ProtocolAuthMethod{Method: name}
+}
+
+// methodStatusLabel is the badge beside a method's name.
+//
+// "Ready" rather than "Configured" for a method with nothing to configure. The
+// other three rows use "Configured" to mean a credential that somebody went and
+// created — a shared secret, a connected directory, a webhook password — so on
+// the one row where it meant "there was never anything to do" it read as a
+// setup step already taken, and one-time challenges appeared to be arranged
+// before anyone had touched them.
+//
+// "Ready" over "Off" because the toggle sitting beside this badge already says
+// off, and repeating it wastes the only words the row has to explain that
+// nothing is pending.
+func methodStatusLabel(m ProtocolAuthMethod) string {
+	switch {
+	case m.Enabled:
+		return "On"
+	case m.NoSetup:
+		return "Ready"
+	case m.Configured:
+		return "Configured"
+	}
+	return "Not configured"
+}
+
+// methodStatusTone reserves the warning colour for the one state that is asking
+// for something: a method that cannot be turned on until it is configured.
+// Ready is not a warning — there is nothing to do.
+func methodStatusTone(m ProtocolAuthMethod) c.Tone {
+	switch {
+	case m.Enabled:
+		return c.ToneSuccess
+	case m.NoSetup, m.Configured:
+		return c.ToneNeutral
+	}
+	return c.ToneWarning
+}
+
+func methodActionLabel(m ProtocolAuthMethod) string {
+	switch m.Method {
+	case "one_time":
+		return "Generate"
+	case "static":
+		if m.Configured {
+			return "Rotate"
+		}
+		return "Generate"
+	case "intune":
+		if m.Configured {
+			return "Reconnect"
+		}
+		return "Connect"
+	}
+	if m.Configured {
+		return "Update"
+	}
+	return "Configure"
+}
+
+func jamfUsername(m ProtocolAuthMethod) string {
+	if m.Username != "" {
+		return m.Username
+	}
+	return "simplescep"
+}
+
+func patternLabel(pattern string) string {
+	if pattern == "" {
+		return "Any"
+	}
+	return pattern
+}
+
+// messageTypeLabel names the RFC 8894 message type, which is carried on the
+// wire as a number.
+func messageTypeLabel(messageType string) string {
+	switch messageType {
+	case "19":
+		return "Enrollment"
+	case "17":
+		return "Renewal"
+	case "20":
+		return "Poll"
+	}
+	if messageType == "" {
+		return "—"
+	}
+	return messageType
+}
+
+func authorizationLabel(source string) string {
+	switch source {
+	case "renewal":
+		return "Renewal"
+	case "one_time":
+		return "One-time challenge"
+	case "static":
+		return "Shared secret"
+	case "intune":
+		return "Microsoft Intune"
+	}
+	return "—"
+}

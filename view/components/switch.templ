@@ -1,0 +1,33 @@
+package components
+
+templ Switch(attrs templ.Attributes) {
+	<button { mergeAttrs("switch h-6 w-11 cursor-pointer rounded-full border-0 bg-border p-0.5 after:block after:size-5 after:rounded-full after:bg-muted-foreground after:content-[''] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-50", withDefault(withDefault(withDefault(attrs, "type", "button"), "role", "switch"), "aria-checked", "false"))... }></button>
+}
+
+// SwitchInput is the same control as Switch, but a real checkbox rather than a
+// button, for the case where the toggle is one field of a form that is saved by
+// its own submit button.
+//
+// Switch above cannot do that job. It renders a <button>, and a button carries
+// no value into a form unless it is the one that submitted it — so a `name` and
+// a `checked` on a Switch are inert attributes on an element the browser never
+// serialises, and the form posts nothing for the field however the toggle
+// looks. It also has no state of its own: `checked` is not a button attribute,
+// so the knob stays wherever the server rendered it no matter how often it is
+// clicked.
+//
+// A visually hidden checkbox inside the label fixes both at once and needs no
+// script: the browser owns the checked state, the click target is the whole
+// track because the input is inside its own label, and an unchecked box posts
+// nothing at all — which is the presence-not-value contract the handlers on the
+// other end already read.
+//
+// The knob is a sibling <span> driven by peer-checked: rather than an ::after on
+// the input, because a pseudo-element on a form control is not something every
+// browser renders.
+templ SwitchInput(attrs templ.Attributes) {
+	<label class="switch relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-border p-0.5 transition-colors has-[:checked]:bg-primary has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-primary has-[:disabled]:pointer-events-none has-[:disabled]:opacity-50">
+		<input { withDefault(withDefault(attrs, "type", "checkbox"), "class", "peer sr-only")... }/>
+		<span class="block size-5 rounded-full bg-muted-foreground transition-transform peer-checked:translate-x-5 peer-checked:bg-primary-foreground"></span>
+	</label>
+}

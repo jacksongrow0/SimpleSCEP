@@ -1,0 +1,7 @@
+package components
+
+templ Button(props ButtonProps) {
+	<button { mergeAttrs(buttonClass(props), props.Attrs)... }>
+		{ children... }
+	</button>
+}

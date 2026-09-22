@@ -1,0 +1,386 @@
+package home
+
+import (
+	"net/url"
+	"strconv"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/audit"
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// AuditData is one rendering of the log: the rows that matched, the filters
+// that produced them (so the form comes back filled in), and the choices the
+// filters offer.
+type AuditData struct {
+	Events []audit.Event
+	Actors []auth.User
+	// Total counts every event the organization has; Matching counts the ones
+	// these filters select. The header reports both, because "8 of 4,102" says
+	// something a filtered count alone does not: that the log is intact and the
+	// filter is narrow, rather than that little has happened.
+	Total    int
+	Matching int
+	Filter   audit.Filter
+	ActorID  string
+	Action   string
+	From, To string
+	// Page is 1-based and always within [1, Pages]: the handler clamps it, so
+	// the template never has to render a page that does not exist.
+	Page     int
+	Pages    int
+	PageSize int
+	// Capped reports that Pages was cut down to the paging depth limit, so the
+	// last page of the pager is not the last page of the log.
+	Capped bool
+}
+
+templ Audit(session auth.Session, data AuditData) {
+	@layout.App("Audit log", "audit", shellSession(session)) {
+		@c.Card(c.CardProps{}) {
+			@c.CardHeader(c.CardHeaderProps{Title: "Audit log", Description: auditSummary(data), Icon: "scroll-text", Responsive: true}) {
+				if data.Total > 0 {
+					@c.ButtonLink(c.ButtonLinkProps{Href: "/audit.csv?" + auditQuery(data), ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+						@c.Icon("download")
+						<span>Export CSV</span>
+					}
+				} else {
+					@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{"disabled": true}}) {
+						@c.Icon("download")
+						Export CSV
+					}
+				}
+			}
+			@c.CardBody(templ.Attributes{"class": "stack flex flex-col gap-6"}) {
+				// A plain GET form: the filter state belongs in the URL so a
+				// filtered view can be linked, reloaded, and exported.
+				<form method="get" action="/audit" class="grid gap-4 four grid-cols-4 max-md:grid-cols-1">
+					@c.Field(c.FieldProps{Label: "Actor"}) {
+						@c.Select(templ.Attributes{"name": "actor"}) {
+							<option value="" selected?={ data.ActorID == "" }>All actors</option>
+							<option value="system" selected?={ data.ActorID == "system" }>SimpleSCEP (automated)</option>
+							for _, user := range data.Actors {
+								<option value={ user.ID } selected?={ data.ActorID == user.ID }>{ actorLabel(user) }</option>
+							}
+						}
+					}
+					@c.Field(c.FieldProps{Label: "Event type"}) {
+						@c.Select(templ.Attributes{"name": "action"}) {
+							<option value="" selected?={ data.Action == "" }>All events</option>
+							for _, action := range audit.Actions {
+								<option value={ action } selected?={ data.Action == action }>{ audit.ActionLabel(action) }</option>
+							}
+						}
+					}
+					@c.Field(c.FieldProps{Label: "From"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"type": "date", "name": "from", "value": data.From}})
+					}
+					@c.Field(c.FieldProps{Label: "To"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"type": "date", "name": "to", "value": data.To}})
+					}
+					<div class="col-span-full flex flex-wrap justify-end gap-2">
+						if auditFiltered(data) {
+							@c.ButtonLink(c.ButtonLinkProps{Href: "/audit", ButtonProps: c.ButtonProps{Variant: c.ButtonGhost}}) {
+								Clear filters
+							}
+						}
+						@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+							@c.Icon("search")
+							<span>Apply</span>
+						}
+					</div>
+				</form>
+				if len(data.Events) == 0 {
+					@c.EmptyState(c.EmptyStateProps{Icon: "scroll-text", Title: auditEmptyTitle(data), Description: auditEmptyCopy(data)}) {
+						if auditFiltered(data) {
+							@c.ButtonLink(c.ButtonLinkProps{Href: "/audit"}) {
+								Clear filters
+							}
+						}
+					}
+				} else {
+					<div class="grid gap-1">
+						for _, event := range data.Events {
+							@AuditRow(event)
+						}
+					</div>
+					@AuditPager(data)
+				}
+			}
+		}
+	}
+}
+
+// AuditRow is one line, deliberately. The log is read by scrolling it — looking
+// for the entry that does not belong, or for the last thing someone did before
+// an incident — and that is a scanning job, so the row is sized to fit as many
+// on screen as will still read cleanly rather than to give each one a card.
+//
+// The event and its subject share the line, separated by a dot, because the
+// label alone ("Certificate issued") is never the interesting half. The subject
+// truncates and the label does not: which certificate can be cut off and
+// recovered from the CSV, but a row whose action is unreadable is not a row.
+//
+// The subject is a <span> rather than the <p> it used to be, and that is
+// load-bearing rather than taste. base.templ sets [&_p]:my-[1em] on <body>,
+// which compiles to a descendant selector — higher specificity than any plain
+// margin utility — so the mt-0.5 and mb-0 this element used to carry were
+// silently inert and every row paid 28px for two margins nobody asked for. A
+// span is not reachable by that rule at all. If this has to become a <p> again,
+// the override belongs on the row as [&_p]:my-0, which outranks it.
+templ AuditRow(event audit.Event) {
+	// max-md:items-stretch, not items-start. Stacked, these two blocks have to
+	// keep filling the row for the subject to have a width to truncate against —
+	// flex-1 and min-w-0 govern the main axis, which is vertical once the row is
+	// a column, so with items-start the left block sizes to its own untruncated
+	// text and pushes the whole row out past the card. min-w-0 on the row itself
+	// for the same reason one level up: a grid item defaults to min-width:auto.
+	<div class="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] px-3 py-1.5 max-md:flex-col max-md:items-stretch max-md:gap-1">
+		<div class="flex min-w-0 flex-1 items-center gap-2.5">
+			<span class="grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_oklch,var(--color-primary)_15%,transparent)] text-primary [&_svg]:size-3.5">
+				@c.Icon(auditIcon(event.Action))
+			</span>
+			// Nested so the label and its subject sit closer to each other than
+			// the pair of them sits to the icon.
+			<div class="flex min-w-0 items-baseline gap-1.5">
+				<strong class="shrink-0 font-medium">{ audit.ActionLabel(event.Action) }</strong>
+				if auditSubtitle(event) != "" {
+					<span class="min-w-0 truncate text-sm text-muted-foreground">· { auditSubtitle(event) }</span>
+				}
+			</div>
+		</div>
+		// Indented to the title on mobile, where this wraps under the row rather
+		// than sitting at the end of it.
+		<div class="flex shrink-0 items-center gap-2 text-sm text-muted-foreground max-md:pl-[34px]">
+			<span class="text-foreground">{ event.Actor() }</span>
+			@c.LocalTime(event.At, "datetime")
+			if event.ActorIP != "" {
+				// The user agent is a tooltip rather than a fourth column: it is
+				// the longest field on the row and the one least often read.
+				<span class="text-xs" title={ event.ActorUserAgent }>{ event.ActorIP }</span>
+			}
+		</div>
+	</div>
+}
+
+// AuditPager walks the log a page at a time.
+//
+// Rendered whenever there is anything to say, not only when there is more than
+// one page: on a single page it is still the line that says how much of the log
+// the reader is looking at, which is the question a filtered audit view exists
+// to answer. The page links disappear on their own when there is one page,
+// because the window is empty.
+//
+// Plain links, not htmx. The filter form beside it is a GET form for the same
+// reason — a page of an audit log is a place you link a colleague to, cite in a
+// ticket, and reload a week later — and a pager that swapped rows in without
+// touching the URL would take that back.
+templ AuditPager(data AuditData) {
+	if len(data.Events) > 0 {
+		<div class="flex items-center justify-between gap-4 border-t border-border pt-4 max-md:flex-col max-md:items-stretch">
+			<p class="m-0 text-sm text-muted-foreground">{ auditRange(data) }</p>
+			if data.Pages > 1 {
+				<nav class="flex flex-wrap items-center gap-1 max-md:justify-center" aria-label="Audit log pages">
+					@auditStep(data, data.Page-1, "chevron-left", "Previous page")
+					for _, page := range auditPageWindow(data) {
+						if page == 0 {
+							<span class="px-1 text-sm text-muted-foreground" aria-hidden="true">…</span>
+						} else if page == data.Page {
+							// The current page is not a link to itself. It carries
+							// aria-current so the pager reads as a position rather
+							// than as a row of identical buttons.
+							@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{
+								"type": "button", "aria-current": "page", "class": "min-w-8 tabular-nums"}}) {
+								{ strconv.Itoa(page) }
+							}
+						} else {
+							@c.ButtonLink(c.ButtonLinkProps{Href: auditPageHref(data, page),
+								ButtonProps: c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall,
+									Attrs: templ.Attributes{"class": "min-w-8 tabular-nums",
+										"aria-label": "Page " + strconv.Itoa(page)}}}) {
+								{ strconv.Itoa(page) }
+							}
+						}
+					}
+					@auditStep(data, data.Page+1, "chevron-right", "Next page")
+				</nav>
+			}
+		</div>
+		if data.Capped {
+			<p class="m-0 text-sm text-muted-foreground">
+				Paging stops at { strconv.Itoa(data.Pages) } pages. Narrow the filters to reach older events, or export the CSV for the whole record.
+			</p>
+		}
+	}
+}
+
+// auditStep is one end of the pager. At the end it is a disabled button rather
+// than a missing one, so the row does not change width as it is walked and the
+// keyboard focus order stays put.
+templ auditStep(data AuditData, page int, icon string, label string) {
+	if page >= 1 && page <= data.Pages {
+		@c.ButtonLink(c.ButtonLinkProps{Href: auditPageHref(data, page),
+			ButtonProps: c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall,
+				Attrs: templ.Attributes{"aria-label": label}}}) {
+			@c.Icon(icon)
+		}
+	} else {
+		@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall,
+			Attrs: templ.Attributes{"type": "button", "disabled": true, "aria-label": label}}) {
+			@c.Icon(icon)
+		}
+	}
+}
+
+// auditRange says which slice of the matches is on screen. It counts from the
+// page rather than from len(Events) at the low end and to the row count at the
+// high end, so the last page reads "Showing 201-237 of 237" rather than
+// rounding up to a page that is not full.
+func auditRange(data AuditData) string {
+	first := (data.Page-1)*data.PageSize + 1
+	last := first + len(data.Events) - 1
+	matches := " matching events"
+	if data.Matching == 1 {
+		matches = " matching event"
+	}
+	return "Showing " + strconv.Itoa(first) + "-" + strconv.Itoa(last) +
+		" of " + strconv.Itoa(data.Matching) + matches + "."
+}
+
+// auditPageWindow is the run of page numbers to offer: the first and last page
+// always, the pages either side of the current one, and a 0 wherever a stretch
+// was skipped, which the template renders as an ellipsis.
+//
+// Bounded rather than exhaustive because the pager sits under the rows on a page
+// that can have two hundred of them, and a hundred numbered links is not a
+// control anyone uses — the reader who wants event four thousand reaches for the
+// filters, not for page 81.
+func auditPageWindow(data AuditData) []int {
+	const around = 1
+	var out []int
+	for page := 1; page <= data.Pages; page++ {
+		switch {
+		case page == 1 || page == data.Pages,
+			page >= data.Page-around && page <= data.Page+around:
+			out = append(out, page)
+		// One 0 per gap, not one per page skipped.
+		case len(out) > 0 && out[len(out)-1] != 0:
+			out = append(out, 0)
+		}
+	}
+	return out
+}
+
+// auditPageHref keeps the filters on every page link. Without this the pager
+// would quietly widen the query it is paging through, which is the kind of bug
+// that reads as missing audit rows.
+func auditPageHref(data AuditData, page int) string {
+	query := auditQuery(data)
+	if page > 1 {
+		if query != "" {
+			query += "&"
+		}
+		query += "page=" + strconv.Itoa(page)
+	}
+	if query == "" {
+		return "/audit"
+	}
+	return "/audit?" + query
+}
+
+func actorLabel(user auth.User) string {
+	if user.Name != "" {
+		return user.Name + " · " + user.Email
+	}
+	return user.Email
+}
+
+func auditSubtitle(event audit.Event) string {
+	switch {
+	case event.Target != "" && event.Detail != "":
+		return event.Target + " · " + event.Detail
+	case event.Target != "":
+		return event.Target
+	default:
+		return event.Detail
+	}
+}
+
+func auditIcon(action string) string {
+	switch action {
+	case audit.ActionCertificateIssued:
+		return "file-key"
+	case audit.ActionCertificateRevoked, audit.ActionCADeleted, audit.ActionUserRemoved:
+		return "shield-off"
+	case audit.ActionRootCACreated, audit.ActionIssuingCACreated, audit.ActionCAImported:
+		return "shield-check"
+	case audit.ActionEndpointCreated, audit.ActionEndpointDeleted, audit.ActionEndpointEnabled,
+		audit.ActionEndpointPaused, audit.ActionEndpointPolicy,
+		audit.ActionACMEEndpointCreated, audit.ActionACMEEndpointDeleted, audit.ActionACMEEndpointEnabled,
+		audit.ActionACMEEndpointPaused, audit.ActionACMEEndpointPolicy,
+		audit.ActionESTEndpointCreated, audit.ActionESTEndpointDeleted, audit.ActionESTEndpointEnabled,
+		audit.ActionESTEndpointPaused, audit.ActionESTEndpointPolicy,
+		audit.ActionSCEPAuthMethodChanged, audit.ActionSCEPJamfConfigured,
+		audit.ActionSCEPIntuneConnected, audit.ActionSCEPIntuneDisconnected:
+		return "radio"
+	// Anything that hands out or invalidates a credential a device authenticates
+	// with, across all three protocols.
+	case audit.ActionSCEPChallengeIssued, audit.ActionSCEPSecretRotated,
+		audit.ActionACMECredentialIssued, audit.ActionACMECredentialRevoked,
+		audit.ActionESTCredentialIssued, audit.ActionESTCredentialRevoked:
+		return "key"
+	case audit.ActionSignedIn, audit.ActionSignedOut, audit.ActionUserInvited, audit.ActionUserRoleChanged:
+		return "users"
+	// The second-factor and passkey events an investigation into a compromised
+	// account reads first.
+	case audit.ActionMFAEnrolled, audit.ActionMFARemoved, audit.ActionMFAFailed,
+		audit.ActionMFARecoveryUsed, audit.ActionMFARecoveryRegenerated,
+		audit.ActionPasskeyRegistered, audit.ActionPasskeyRemoved,
+		audit.ActionPasskeyCloneWarning, audit.ActionStepUpFailed:
+		return "fingerprint"
+	}
+	return "scroll-text"
+}
+
+func auditSummary(data AuditData) string {
+	if data.Total == 0 {
+		return "Non-repudiable record of PKI, user, and account changes. Nothing recorded yet."
+	}
+	events := " events"
+	if data.Total == 1 {
+		events = " event"
+	}
+	return "Non-repudiable record of PKI, user, and account changes. " +
+		strconv.Itoa(data.Total) + events + " recorded."
+}
+
+func auditFiltered(data AuditData) bool {
+	return data.ActorID != "" || data.Action != "" || data.From != "" || data.To != ""
+}
+
+func auditEmptyTitle(data AuditData) string {
+	if auditFiltered(data) {
+		return "No matching events"
+	}
+	return "Nothing recorded yet"
+}
+
+func auditEmptyCopy(data AuditData) string {
+	if auditFiltered(data) {
+		return "No events match these filters. Widen the dates or clear them to see the whole log."
+	}
+	return "Every certificate, CA, endpoint, user, and sign-in action is recorded here. Perform an action to populate the log."
+}
+
+// auditQuery rebuilds the current filter as a query string so the CSV export
+// covers exactly what the page is showing.
+func auditQuery(data AuditData) string {
+	values := url.Values{}
+	for key, value := range map[string]string{"actor": data.ActorID, "action": data.Action, "from": data.From, "to": data.To} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	return values.Encode()
+}

@@ -1,0 +1,18 @@
+package components
+
+templ EmptyState(props EmptyStateProps) {
+	<div { mergeAttrs(emptyStateClass(props), props.Attrs)... }>
+		if props.Icon != "" {
+			<div class="empty-icon mx-auto grid size-12 place-items-center rounded-xl bg-[color-mix(in_oklch,var(--color-primary)_10%,transparent)] text-primary [&_svg]:size-6">
+				@Icon(props.Icon)
+			</div>
+		}
+		if props.Title != "" {
+			<h3>{ props.Title }</h3>
+		}
+		if props.Description != "" {
+			<p>{ props.Description }</p>
+		}
+		{ children... }
+	</div>
+}

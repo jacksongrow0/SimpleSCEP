@@ -1,0 +1,122 @@
+package auth
+
+import c "github.com/jacksongrow0/SimpleSCEP/view/components"
+
+// StepUpMethodView is one way of confirming, as offered to someone who holds
+// it. Kind is the stable identifier internal/auth uses; nothing here decides
+// which methods exist or in what order — that is StepUpMethods' job, and this
+// renders whatever it is handed.
+type StepUpMethodView struct {
+	Kind   string
+	Label  string
+	Detail string
+}
+
+// StepUpProps is one confirmation prompt, wherever it is drawn.
+//
+// The same prompt appears in two places — inline in the account dialog when the
+// Security tab is opened, and in the standalone dialog when a destructive action
+// is refused — and they must offer the same methods. Passing the endpoints in
+// rather than hardcoding them is what lets one template serve both.
+type StepUpProps struct {
+	// Action names what is about to happen, so the prompt reads as a question
+	// about something rather than a demand for a code.
+	Action  string
+	Methods []StepUpMethodView
+	// Post is where the code form submits, and Target/Swap are what it does
+	// with the answer. The inline prompt swaps itself for the unlocked panel;
+	// the dialog writes into its own small result line and replays the refused
+	// request.
+	Post   string
+	Target string
+	Swap   string
+	// FormID lets a submit button outside the form drive it, which is what the
+	// dialog's footer needs.
+	FormID string
+	// ResultID is where a rejection is written. The prompt is what the user is
+	// looking at, so the message belongs in it.
+	ResultID string
+	Error    string
+}
+
+// StepUpMethods renders every way this person can confirm.
+//
+// A Kind with no case here is skipped rather than rendered as an empty box: a
+// factor added to the catalogue before its interface exists should be invisible,
+// not broken. The switch is the one place a new kind needs a branch.
+templ StepUpMethods(props StepUpProps) {
+	<div class="grid gap-3">
+		if props.Error != "" {
+			<p class="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+				{ props.Error }
+			</p>
+		}
+		if len(props.Methods) == 0 {
+			<p class="m-0 text-sm text-muted-foreground">
+				No confirmation method is registered on your account. Sign out and in again to enroll one.
+			</p>
+		}
+		for _, method := range props.Methods {
+			switch method.Kind {
+				case "passkey":
+					@stepUpPasskey(props, method)
+				case "totp":
+					@stepUpTOTP(props, method)
+			}
+		}
+	</div>
+}
+
+// stepUpPasskey is one gesture, so it is a button and not a field. The ceremony
+// runs in mfa.js over fetch, which is why this carries data- attributes rather
+// than hx-post.
+templ stepUpPasskey(props StepUpProps, method StepUpMethodView) {
+	<div class="flex items-center justify-between gap-3 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4">
+		<div class="min-w-0">
+			<strong class="block text-sm font-medium">{ method.Label }</strong>
+			<span class="text-xs text-muted-foreground">{ method.Detail }</span>
+		</div>
+		@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{
+			"type": "button", "data-passkey-stepup": true,
+			"data-passkey-result": props.ResultID,
+			// Always rendered so a failed or delayed script cannot erase the
+			// only visible way to retry. mfa.js binds it where WebAuthn exists,
+			// and disables it with the explanation below where it does not.
+		}}) {
+			Confirm with a passkey
+		}
+		<span class="text-xs text-muted-foreground" data-passkey-unsupported hidden>
+			This browser cannot use passkeys here.
+		</span>
+	</div>
+}
+
+// stepUpTOTP is the code field. It stays the fallback everywhere: it needs no
+// platform support, and enrolment makes an authenticator mandatory, so it is
+// the one method every account is guaranteed to hold.
+templ stepUpTOTP(props StepUpProps, method StepUpMethodView) {
+	<div class="rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4">
+		<div class="mb-3 min-w-0">
+			<strong class="block text-sm font-medium">{ method.Label }</strong>
+			<span class="text-xs text-muted-foreground">{ method.Detail }</span>
+		</div>
+		<form
+			id={ props.FormID }
+			method="post"
+			action={ templ.SafeURL(props.Post) }
+			hx-post={ props.Post }
+			hx-target={ props.Target }
+			hx-swap={ props.Swap }
+			class="flex items-start gap-2"
+		>
+			// autofocus rather than a script. htmx focuses an [autofocus] in
+			// content it swaps in, which is what this fragment always is, and
+			// a prompt that opens without focus makes a keyboard user go
+			// looking for the field every single time.
+			@c.Input(c.InputProps{Attrs: codeAttrs("one-time-code", nil)})
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+				Confirm
+			}
+		</form>
+	</div>
+}

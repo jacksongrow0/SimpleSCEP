@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.claude
+.codex
+.vscode
+.gitignore
+.dockerignore
+.prettierrc
+.env
+.env.*
+docs
+node_modules
+static
+*_templ.go
+**/*_test.go

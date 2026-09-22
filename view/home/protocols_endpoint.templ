@@ -1,0 +1,137 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strconv"
+)
+
+// ProtocolEndpointView administers one SCEP endpoint. Exactly one endpoint
+// renders per page, which is what lets the dialogs and htmx targets below keep
+// their document-global element IDs.
+templ ProtocolEndpointView(session auth.Session, data ProtocolEndpointData) {
+	@layout.App(data.Endpoint.Name+" · SCEP", "protocols", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			<div class="flex items-center gap-2 text-sm text-muted-foreground">
+				<a href="/protocols" class="underline-offset-2 hover:underline">Enrollment protocols</a>
+				<span>/</span>
+				<span class="text-foreground">{ data.Endpoint.Name }</span>
+			</div>
+			@EndpointSummary(data.Endpoint)
+			@AuthMethodList(data.Methods, data.Endpoint.APIBase)
+			@IssuancePolicy(data.Endpoint)
+			@EnrollmentLog(data.Transactions)
+			@DangerZone(data.Endpoint)
+		</div>
+		@ChallengeDialog(data.Endpoint)
+		@StaticDialog(data.Endpoint.APIBase)
+		@JamfDialog(methodByName(data.Methods, "jamf"), data.Endpoint.JamfWebhookURL, data.Endpoint.APIBase)
+		@PolicyDialog(data.Endpoint)
+		@DeleteEndpointDialog(data.Endpoint)
+	}
+}
+
+templ DangerZone(e ProtocolEndpoint) {
+	<div class="rounded-xl border border-[color-mix(in_oklch,var(--color-destructive)_35%,transparent)] p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Delete this endpoint</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">
+					Removes the enrollment URL, its authentication methods, and its enrollment history. Certificates it already issued keep working until they expire, but they lose the URL they renew through.
+					if e.LiveCertificates > 0 {
+						<strong>{ strconv.Itoa(e.LiveCertificates) } { certificateNoun(e.LiveCertificates) } currently rely on it.</strong>
+					}
+				</p>
+			</div>
+			@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('delete-endpoint-dialog').showModal()"}}) {
+				@c.Icon("trash-2")
+				<span>Delete endpoint</span>
+			}
+		</div>
+		<p id="delete-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+// DeleteEndpointDialog spells out what deletion actually costs before it will
+// accept it. Every consequence below is delayed rather than immediate — the
+// certificates keep working, so nothing looks broken until devices reach their
+// renewal window — which is exactly why it is worth enumerating rather than
+// leaving to a one-line browser confirm.
+templ DeleteEndpointDialog(e ProtocolEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "delete-endpoint-dialog"}}) {
+		<form
+			method="post"
+			action={ templ.SafeURL(e.APIBase + "/delete") }
+			hx-post={ e.APIBase + "/delete" }
+			hx-target="#delete-error"
+			hx-swap="innerHTML"
+		>
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Delete " + e.Name, Description: "This cannot be undone. A replacement endpoint gets a new URL, so it cannot stand in for this one."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				if e.LiveCertificates > 0 {
+					<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+						<span>
+							@c.Icon("circle-alert")
+						</span>
+						<div class="text-sm">
+							<strong>{ strconv.Itoa(e.LiveCertificates) } { certificateNoun(e.LiveCertificates) } issued by this endpoint { isAre(e.LiveCertificates) } still valid.</strong>
+							They keep working, so nothing will look broken today. The damage appears when those devices try to renew.
+						</div>
+					</div>
+				}
+				<div class="grid gap-2 text-sm">
+					<strong class="font-medium">What happens</strong>
+					<ul class="m-0 grid list-disc gap-1.5 pl-5 text-muted-foreground">
+						<li><strong class="text-foreground">Devices stop being able to renew.</strong> The enrollment URL stops responding immediately. Each certificate keeps working until it expires, and then that device loses whatever the certificate authenticated — Wi-Fi, VPN, 802.1X — with no way to re-enroll here.</li>
+						<li><strong class="text-foreground">Any MDM profile pointing at this URL breaks.</strong> Intune, Jamf Pro, and anything else configured with it will fail every future enrollment. Repoint them at another endpoint first.</li>
+						<li><strong class="text-foreground">Intune can no longer revoke these certificates.</strong> Revocation matches a serial against the endpoints that issued it; with this one gone, Microsoft is told the certificate was not found and stops asking. Revoking by hand from <a href="/certificates" class="underline underline-offset-2">Certificates</a> still works, and still reaches the CRL and OCSP.</li>
+						<li><strong class="text-foreground">The enrollment history is deleted.</strong> Recent enrollments for this endpoint, including its failures, are removed. The certificates themselves stay listed under Certificates.</li>
+						<li>Unused one-time challenges for this endpoint are voided, and its shared secret and Jamf Pro webhook password stop working.</li>
+					</ul>
+				</div>
+				<div class="grid gap-2 text-sm">
+					<strong class="font-medium">What does not happen</strong>
+					<ul class="m-0 grid list-disc gap-1.5 pl-5 text-muted-foreground">
+						<li>No certificate is revoked. Every one stays valid and trusted until it expires. If they should stop working, revoke them from Certificates <em>before</em> deleting.</li>
+						<li>The issuing CA, its key, and the CRL and OCSP responders are untouched.</li>
+					</ul>
+				</div>
+				<p class="m-0 text-sm text-muted-foreground">If you only want to stop new enrollments, turn the endpoint off instead. That is reversible and leaves renewal, history, and revocation intact.</p>
+				@c.Field(c.FieldProps{Label: "Type the endpoint name to confirm", Hint: "Enter " + e.Name + " exactly."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{
+						"name":         "confirm_name",
+						"required":     true,
+						"autocomplete": "off",
+						"placeholder":  e.Name,
+						"data-expect":  e.Name,
+						"data-script":  "on input if my value is my @data-expect then remove @disabled from #delete-endpoint-submit else add @disabled to #delete-endpoint-submit end",
+					}})
+				}
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Attrs: templ.Attributes{"id": "delete-endpoint-submit", "disabled": true}}) {
+					@c.Icon("trash-2")
+					<span>Delete permanently</span>
+				}
+			}
+		</form>
+	}
+}
+
+func certificateNoun(n int) string {
+	if n == 1 {
+		return "certificate"
+	}
+	return "certificates"
+}
+
+func isAre(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}

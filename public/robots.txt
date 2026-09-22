@@ -1,0 +1,17 @@
+# This host is the signed-in SimpleSCEP dashboard, not a public site. Nothing
+# here belongs in a search result, and the instruction that enforces that is the
+# noindex sent with every response — as an X-Robots-Tag header from
+# internal/middleware/headers.go and as a meta tag in view/layout/base.templ.
+#
+# Crawling is left open on purpose, which looks backwards and is not. A crawler
+# forbidden to fetch a URL never reads the noindex on it, and a URL linked from
+# anywhere else can still be listed from the link alone — that is how a
+# "Disallow: /" site ends up in results with no description under it. Letting the
+# crawler fetch is what gets these pages dropped from the index rather than
+# listed blind. Everything worth reading is behind the session cookie in any
+# case: an anonymous fetch of any page but the sign-in form is a redirect.
+#
+# No Sitemap line. The marketing site at simplescep.com publishes its own; there
+# is nothing on this host to submit.
+User-agent: *
+Allow: /

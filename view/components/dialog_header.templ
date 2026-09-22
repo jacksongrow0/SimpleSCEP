@@ -1,0 +1,10 @@
+package components
+
+templ DialogHeader(props DialogHeaderProps) {
+	<div { mergeAttrs("dialog-head px-6 pt-6 [&_h2]:m-0 [&_h2]:text-lg [&_h2]:font-bold [&_p]:mt-1.5 [&_p]:mb-0 [&_p]:text-muted-foreground", props.Attrs)... }>
+		<h2>{ props.Title }</h2>
+		if props.Description != "" {
+			<p>{ props.Description }</p>
+		}
+	</div>
+}

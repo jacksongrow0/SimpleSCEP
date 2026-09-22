@@ -1,0 +1,10 @@
+package components
+
+templ DialogActions(attrs templ.Attributes) {
+	// flex-wrap keeps a crowded action row (the CA dialog carries up to five
+	// buttons) inside the dialog instead of letting the leading buttons slide
+	// out past its left edge.
+	<div { mergeAttrs("dialog-actions flex flex-wrap items-center justify-end gap-2 px-6 pb-6", attrs)... }>
+		{ children... }
+	</div>
+}

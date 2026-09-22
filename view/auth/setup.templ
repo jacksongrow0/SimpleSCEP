@@ -1,0 +1,46 @@
+package auth
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// Setup is the one-time bootstrap page: it creates this deployment's
+// singleton organization and its first administrator. token is the value
+// printed to the server log at first boot, carried here as a query
+// parameter and echoed back into the form so the browser never has to be
+// told it separately.
+templ Setup(token string) {
+	@layout.Base("Set up SimpleSCEP") {
+		<div class="auth-page grid min-h-screen place-items-center bg-background p-4 [background-image:radial-gradient(ellipse_at_top,oklch(0.28_0.08_240),var(--color-background)_60%)]">
+			<section class="auth-hero hidden">
+				@layout.Logo()
+				<div class="auth-copy"><span class="eyebrow text-xs uppercase tracking-[.1em] text-primary">First-time setup</span><h1>Set up this SimpleSCEP instance.</h1><p>This creates the administrator account for this deployment. Verify your email before opening the dashboard.</p></div>
+				<div class="trust-list"><span>Runs once, for the first administrator only</span><span>Invite managers and auditors afterwards</span></div>
+			</section>
+			<section class="auth-panel w-full">
+				<div class="auth-card mx-auto w-[min(448px,100%)] rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-card)_90%,transparent)] p-6 shadow-[0_1px_3px_#0003] [&>.logo]:mb-7 [&>.logo]:justify-center [&>h2]:m-0 [&>h2]:text-2xl [&>h2]:font-bold [&>p]:mt-1.5 [&>p]:mb-5 [&>p]:text-muted-foreground [&_form]:grid [&_form]:gap-4">
+					@layout.Logo()
+					<h2>Set up this instance</h2>
+					<p>Create the administrator account. This can only be done once.</p>
+					<form method="post" action="/setup" hx-post="/setup">
+						<input type="hidden" name="token" value={ token }/>
+						@c.Field(c.FieldProps{Label: "Organization name"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "organization", "autocomplete": "organization", "required": true, "placeholder": "Acme, Inc."}})
+						}
+						@c.Field(c.FieldProps{Label: "Your name"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "autocomplete": "name", "required": true, "placeholder": "Alex Morgan"}})
+						}
+						@c.Field(c.FieldProps{Label: "Email"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "email", "type": "email", "autocomplete": "email", "required": true, "placeholder": "alex@acme.com"}})
+						}
+						@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+							Create administrator account →
+						}
+					</form>
+					<div class="auth-switch mt-4 text-center text-muted-foreground [&_a]:text-primary">Already set up? <a href="/login">Sign in</a></div>
+				</div>
+			</section>
+		</div>
+	}
+}

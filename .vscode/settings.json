@@ -1,0 +1,17 @@
+{
+  "editor.formatOnSave": true,
+  "files.associations": {
+    "*.templ": "templ"
+  },
+  "prettier.requireConfig": true,
+  "[templ]": {
+    "editor.defaultFormatter": "a-h.templ",
+    "editor.formatOnSave": true
+  },
+  "[css]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}

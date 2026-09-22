@@ -1,0 +1,20 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+)
+
+templ Action(session auth.Session, label string, dialog string, outline bool) {
+	@c.Button(c.ButtonProps{Variant: actionVariant(outline), Attrs: templ.Attributes{"data-dialog": dialog, "data-script": "on click call document.getElementById(my @data-dialog).showModal()"}}) {
+		@c.Icon("plus")
+		<span>{ label }</span>
+	}
+}
+
+func actionVariant(outline bool) c.ButtonVariant {
+	if outline {
+		return c.ButtonOutline
+	}
+	return c.ButtonPrimary
+}

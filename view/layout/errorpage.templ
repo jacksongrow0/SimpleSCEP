@@ -1,0 +1,58 @@
+package layout
+
+import c "github.com/jacksongrow0/SimpleSCEP/view/components"
+
+// ErrorPage is what a failed page load renders instead of bare text.
+//
+// Every page-level failure in this application used to answer
+// `http.Error(w, "overview failed", 500)`, which a browser paints as unstyled
+// black-on-white plaintext — indistinguishable from the service being gone, and
+// carrying an internal string written for a log rather than for a reader. The
+// dashboard is behind a login, so the error should use the same visual language
+// and give the operator something useful to try.
+//
+// Deliberately not the App shell. The shell needs a Session, and the most common
+// reason a page fails is that the query which builds that Session failed — so
+// rendering it here would risk failing inside the error page. The logo and a way
+// back are enough.
+templ ErrorPage(status int, heading, message string) {
+	@Base(heading + " · SimpleSCEP") {
+		<div class="min-h-screen bg-background">
+			<header class="border-b border-border">
+				<div class="mx-auto flex w-[min(820px,100%)] items-center justify-between gap-4 px-6 py-5">
+					@Logo()
+					<a href="/" class="text-sm text-primary">Back to SimpleSCEP</a>
+				</div>
+			</header>
+			<main class="mx-auto w-[min(560px,100%)] px-6 py-20 text-center">
+				<div class="text-sm uppercase tracking-[.1em] text-muted-foreground">{ statusLabel(status) }</div>
+				<h1 class="mt-2 mb-0 text-[30px] leading-[1.2] font-bold tracking-[-.025em]">{ heading }</h1>
+				<p class="mt-3 mb-0 text-muted-foreground">{ message }</p>
+				<div class="mt-8 flex items-center justify-center gap-3">
+					@c.Button(c.ButtonProps{Variant: c.ButtonPrimary, Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '/'"}}) {
+						Go to overview
+					}
+					@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{"type": "button", "data-script": "on click call window.location.reload()"}}) {
+						Try again
+					}
+				</div>
+			</main>
+		</div>
+	}
+}
+
+// statusLabel is the eyebrow above the heading. The number is included because it
+// is what a person includes in a bug report, and the words because the number alone
+// means nothing to most readers.
+func statusLabel(status int) string {
+	switch status {
+	case 403:
+		return "403 · Not permitted"
+	case 404:
+		return "404 · Not found"
+	case 503:
+		return "503 · Unavailable"
+	default:
+		return "500 · Something went wrong"
+	}
+}

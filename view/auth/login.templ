@@ -1,0 +1,88 @@
+package auth
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+templ Login() {
+	@layout.Base("Sign in · SimpleSCEP") {
+		<div class="auth-page grid min-h-screen place-items-center bg-background p-4 [background-image:radial-gradient(ellipse_at_top,oklch(0.28_0.08_240),var(--color-background)_60%)]">
+			<section class="auth-hero hidden">
+				@layout.Logo()
+				<div class="auth-copy">
+					<span class="eyebrow text-xs uppercase tracking-[.1em] text-primary">Self-hosted private PKI</span>
+					<h1>Certificates that simply work.</h1>
+					<p>Issue, automate, and audit certificates across every device and workload from one secure control plane.</p>
+				</div>
+				<div class="trust-list"><span>HSM-backed certificate authorities</span><span>SCEP, ACME, and EST enrollment</span><span>Complete audit history and role controls</span></div>
+			</section>
+			<section class="auth-panel w-full">
+				<div class="auth-card mx-auto w-[min(448px,100%)] rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-card)_90%,transparent)] p-6 shadow-[0_1px_3px_#0003] [&>.logo]:mb-7 [&>.logo]:justify-center [&>h2]:m-0 [&>h2]:text-2xl [&>h2]:font-bold [&>p]:mt-1.5 [&>p]:mb-5 [&>p]:text-muted-foreground [&_form]:grid [&_form]:gap-4">
+					@layout.Logo()
+					<h2>Welcome back</h2>
+					<p>We'll email you a link.</p>
+					// The id is the swap target, and LoginSent carries it too: the
+					// answer to this form replaces the form. Asking for a link and
+					// then still being shown the button that asks for one reads as
+					// nothing having happened, which is why the outcome is drawn
+					// here rather than raised as a toast over an unchanged card.
+					<form
+						id="login-form"
+						method="post"
+						action="/login"
+						hx-post="/login"
+						hx-target="#login-form"
+						hx-swap="outerHTML"
+					>
+						@c.Field(c.FieldProps{Label: "Email"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "email", "type": "email", "autocomplete": "email", "required": true, "placeholder": "you@company.com"}})
+						}
+						@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+							Continue →
+						}
+					</form>
+				</div>
+			</section>
+		</div>
+	}
+}
+
+// LoginSent replaces the sign-in form once a link has been asked for.
+//
+// It says the same conditional thing internal/auth's loginAccepted says, and it
+// has to: every branch of POST /login renders this — address found, not found,
+// rate limited, mail failed — so any wording that only holds for a real account
+// would be the enumeration oracle the neutral sentence exists to close. The
+// address is echoed because it is what the person just typed, not a fact about
+// the account list, and seeing it is how a typo gets caught.
+//
+// The id matches the form's so the swap lands here; nothing in this fragment
+// posts, so it is the end of the exchange. Starting over means loading /login
+// again, which the link below does.
+templ LoginSent(email string) {
+	<div id="login-form">
+		@c.EmptyState(c.EmptyStateProps{Icon: "mail", Title: "Check your email", Compact: true}) {
+			<p>
+				If
+				<strong class="text-foreground">{ sentTo(email) }</strong>
+				has an account, a sign-in link is on its way.
+			</p>
+			<p class="mt-3">
+				Nothing yet? Check your spam folder, or
+				<a class="text-primary" href="/login">try a different address</a>.
+			</p>
+		}
+	</div>
+}
+
+// sentTo keeps an unusable value out of the sentence. The field is type=email
+// and required, but this is a form post and neither is a guarantee: an empty or
+// absurd value reads as the generic phrasing rather than as garbage quoted back
+// at the reader.
+func sentTo(email string) string {
+	if email == "" || len(email) > 254 {
+		return "that address"
+	}
+	return email
+}

@@ -1,0 +1,123 @@
+package home
+
+import (
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strconv"
+)
+
+// ESTEndpointView administers one EST endpoint. Like its SCEP and ACME
+// counterparts, exactly one endpoint renders per page, which is what lets the
+// dialogs and htmx targets below keep their document-global element IDs.
+templ ESTEndpointView(session auth.Session, data ESTEndpointData) {
+	@layout.App(data.Endpoint.Name+" · EST", "protocols", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			<div class="flex items-center gap-2 text-sm text-muted-foreground">
+				<a href="/protocols" class="underline-offset-2 hover:underline">Enrollment protocols</a>
+				<span>/</span>
+				<span class="text-foreground">{ data.Endpoint.Name }</span>
+			</div>
+			@ESTEndpointSummary(data.Endpoint)
+			@ESTCredentialList(data.Endpoint, data.Credentials)
+			@ESTIssuancePolicy(data.Endpoint)
+			@ESTEnrollmentLog(data.Enrollments)
+			@ESTDangerZone(data.Endpoint)
+		</div>
+		@ESTCredentialDialog(data.Endpoint)
+		@ESTPolicyDialog(data.Endpoint)
+		@ESTDeleteDialog(data.Endpoint)
+	}
+}
+
+templ ESTDangerZone(e ESTEndpoint) {
+	<div class="rounded-xl border border-[color-mix(in_oklch,var(--color-destructive)_35%,transparent)] p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Delete this endpoint</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">
+					Removes the base URL, its credentials, and its enrollment history. Certificates it already issued keep working until they expire, but they lose the URL they renew through.
+					if e.LiveCertificates > 0 {
+						<strong>{ strconv.Itoa(e.LiveCertificates) } { certificateNoun(e.LiveCertificates) } currently rely on it.</strong>
+					}
+				</p>
+			</div>
+			@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('est-delete-dialog').showModal()"}}) {
+				@c.Icon("trash-2")
+				<span>Delete endpoint</span>
+			}
+		</div>
+		<p id="est-delete-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+// ESTDeleteDialog spells out what deletion costs before it will accept it. As
+// with SCEP and ACME, every consequence is delayed rather than immediate, which
+// is exactly why it is worth enumerating.
+//
+// The EST-specific sting is the second item. EST enrols infrastructure that is
+// installed and then left alone for a year: a gateway in a branch office renews
+// unattended, and nobody is looking at it between now and the day it stops
+// passing traffic.
+templ ESTDeleteDialog(e ESTEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "est-delete-dialog"}}) {
+		<form
+			method="post"
+			action={ templ.SafeURL(e.APIBase + "/delete") }
+			hx-post={ e.APIBase + "/delete" }
+			hx-target="#est-delete-error"
+			hx-swap="innerHTML"
+		>
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Delete " + e.Name, Description: "This cannot be undone. A replacement endpoint gets a new base URL, so it cannot stand in for this one."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				if e.LiveCertificates > 0 {
+					<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+						<span>
+							@c.Icon("circle-alert")
+						</span>
+						<div class="text-sm">
+							<strong>{ strconv.Itoa(e.LiveCertificates) } { certificateNoun(e.LiveCertificates) } issued by this endpoint { isAre(e.LiveCertificates) } still valid.</strong>
+							They keep working, so nothing will look broken today. The damage appears when those devices try to re-enroll.
+						</div>
+					</div>
+				}
+				<div class="grid gap-2 text-sm">
+					<strong class="font-medium">What happens</strong>
+					<ul class="m-0 grid list-disc gap-1.5 pl-5 text-muted-foreground">
+						<li><strong class="text-foreground">The base URL stops responding immediately.</strong> Every device configured with it fails its next enrollment.</li>
+						<li><strong class="text-foreground">Re-enrollment fails silently.</strong> EST devices renew on their own timer, often in a location nobody visits. This will not surface as an alert; it surfaces as a gateway dropping tunnels months later. Repoint the devices at another endpoint first.</li>
+						<li><strong class="text-foreground">Every credential is deleted.</strong> Devices authenticating with them lose the ability to enroll and to renew.</li>
+						<li><strong class="text-foreground">The enrollment history is deleted.</strong> The certificates themselves stay listed under Certificates.</li>
+					</ul>
+				</div>
+				<div class="grid gap-2 text-sm">
+					<strong class="font-medium">What does not happen</strong>
+					<ul class="m-0 grid list-disc gap-1.5 pl-5 text-muted-foreground">
+						<li>No certificate is revoked. Every one stays valid and trusted until it expires. If they should stop working, revoke them from <a href="/certificates" class="underline underline-offset-2">Certificates</a> <em>before</em> deleting.</li>
+						<li>The issuing CA, its key, and the CRL and OCSP responders are untouched.</li>
+					</ul>
+				</div>
+				<p class="m-0 text-sm text-muted-foreground">If you only want to stop new enrollments, turn the endpoint off instead. That is reversible and leaves the credentials intact.</p>
+				@c.Field(c.FieldProps{Label: "Type the endpoint name to confirm", Hint: "Enter " + e.Name + " exactly."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{
+						"name":         "confirm_name",
+						"required":     true,
+						"autocomplete": "off",
+						"placeholder":  e.Name,
+						"data-expect":  e.Name,
+						"data-script":  "on input if my value is my @data-expect then remove @disabled from #est-delete-submit else add @disabled to #est-delete-submit end",
+					}})
+				}
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonDestructive, Attrs: templ.Attributes{"id": "est-delete-submit", "disabled": true}}) {
+					@c.Icon("trash-2")
+					<span>Delete permanently</span>
+				}
+			}
+		</form>
+	}
+}

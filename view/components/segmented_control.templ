@@ -1,0 +1,7 @@
+package components
+
+templ SegmentedControl(attrs templ.Attributes) {
+	<div { mergeAttrs("segment-control flex w-max max-w-full rounded-lg bg-muted p-1 [&_.segment.active]:bg-background [&_.segment.active]:text-foreground [&_.segment.active]:shadow-[0_1px_2px_#0003]", withDefault(attrs, "role", "group"))... }>
+		{ children... }
+	</div>
+}

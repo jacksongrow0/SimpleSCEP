@@ -1,0 +1,7 @@
+package components
+
+templ Pill(props PillProps) {
+	<span { mergeAttrs(pillClass(props.Tone), props.Attrs)... }>
+		{ children... }
+	</span>
+}

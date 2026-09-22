@@ -1,0 +1,18 @@
+package components
+
+templ CardHeader(props CardHeaderProps) {
+	<div { mergeAttrs(cardHeaderClass(props.Responsive), props.Attrs)... }>
+		<div>
+			<h3 class="flex items-center gap-2">
+				if props.Icon != "" {
+					@Icon(props.Icon)
+				}
+				{ props.Title }
+			</h3>
+			if props.Description != "" {
+				<p>{ props.Description }</p>
+			}
+		</div>
+		{ children... }
+	</div>
+}

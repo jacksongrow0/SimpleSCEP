@@ -1,0 +1,169 @@
+package home
+
+import (
+	"strconv"
+	"time"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+templ Users(session auth.Session, users []auth.User, pending []auth.Invitation) {
+	@layout.App("Users", "users", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			<div class="grid gap-4 three grid-cols-3 max-md:grid-cols-1">
+				@RoleCard("Administrator", "Full access — manage users, CAs, certificates, and protocols.")
+				@RoleCard("Certificate Manager", "View and issue certificates and manage protocols. Can't manage users or organization settings.")
+				@RoleCard("Certificate Auditor", "Read-only access to audit logs and certificate inventory.")
+			</div>
+			@c.Card(c.CardProps{Attrs: templ.Attributes{"style": "overflow:visible"}}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Team members", Description: userCount(users) + " in " + session.OrganizationName, Responsive: true}) {
+					@c.Button(c.ButtonProps{Attrs: templ.Attributes{"data-dialog": "invite-dialog", "data-script": "on click call document.getElementById(my @data-dialog).showModal()"}}) {
+						@c.Icon("user-plus")
+						Invite member
+					}
+				}
+				@c.CardBody(nil) {
+					<div class="list-box overflow-hidden rounded-xl border border-border">
+						for _, user := range users {
+							<div class="list-row grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 border-b border-border p-4 last:border-b-0 sm:flex [&_.avatar]:size-10">
+								<div class="avatar grid size-9 place-items-center rounded-full bg-[color-mix(in_oklch,var(--color-primary)_15%,transparent)] font-semibold text-primary">{ userInitial(user.Name) }</div>
+								<div class="list-row-main min-w-0 flex-1 [&_strong]:block [&_strong]:truncate [&_small]:block [&_small]:truncate [&_small]:text-xs [&_small]:text-muted-foreground">
+									<strong>
+										{ user.Name }
+										if session.UserID == user.ID {
+											@c.Pill(c.PillProps{Tone: c.TonePrimary}) {
+												You
+											}
+										}
+									</strong><small>{ user.Email }</small>
+								</div>
+								<div class="list-row-actions col-span-full flex items-center gap-2 sm:col-auto [&_select]:min-w-[200px]">
+									<form method="post" action={ "/settings/users/" + user.ID + "/role" } hx-post={ "/settings/users/" + user.ID + "/role" }>
+										@c.Select(templ.Attributes{"name": "role", "aria-label": "Role", "onchange": "this.form.requestSubmit()"}) {
+											@RoleOptions(user.Role)
+										}
+									</form>
+									@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Size: c.ButtonIcon, Attrs: templ.Attributes{"disabled": session.UserID == user.ID, "data-dialog": "remove-" + user.ID, "data-script": "on click call document.getElementById(my @data-dialog).showModal()", "aria-label": "Remove member"}}) {
+										@c.Icon("trash-2")
+									}
+								</div>
+							</div>
+							@RemoveDialog(user)
+						}
+					</div>
+				}
+			}
+			if len(pending) > 0 {
+				@PendingInvitations(session, pending)
+			}
+		</div>
+		@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "invite-dialog"}}) {
+			<form method="post" action="/settings/invitations" hx-post="/settings/invitations">
+				@c.DialogHeader(c.DialogHeaderProps{Title: "Invite a team member", Description: "They'll get an email invitation to join " + session.OrganizationName + "."})
+				@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+					@c.Field(c.FieldProps{Label: "Full name"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name"}})
+					}
+					@c.Field(c.FieldProps{Label: "Email"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "email", "type": "email", "required": true}})
+					}
+					@c.Field(c.FieldProps{Label: "Role", Hint: "View and issue certificates and manage protocols. Can't manage users or organization settings."}) {
+						@c.Select(templ.Attributes{"name": "role"}) {
+							@RoleOptions("certificate_manager")
+						}
+					}
+				}
+				@c.DialogActions(nil) {
+					@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+						Cancel
+					}
+					@c.Button(c.ButtonProps{}) {
+						Send invite
+					}
+				}
+			</form>
+		}
+	}
+}
+
+// PendingInvitations lists the invitations nobody has accepted.
+//
+// They were written to the database and never shown anywhere. An administrator
+// who mistyped an address had no way to see the invitation, no way to withdraw it,
+// and a seven-day window in which the token in that email was a working sign-up
+// into their organization — while the failure message on the send path advised
+// them to "remove it and invite them again", naming an action the product did not
+// have.
+//
+// Rendered only when there is something in it: an empty card on the team page
+// every day of the year would train people not to look at it on the day it
+// matters.
+templ PendingInvitations(session auth.Session, pending []auth.Invitation) {
+	@c.Card(c.CardProps{}) {
+		@c.CardHeader(c.CardHeaderProps{Title: "Pending invitations",
+			Description: invitationCount(pending) + " not accepted yet", Icon: "mail"})
+		@c.CardBody(nil) {
+			<div class="list-box overflow-hidden rounded-xl border border-border">
+				for _, invitation := range pending {
+					<div class="list-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border p-4 last:border-b-0">
+						<div class="min-w-0 [&_strong]:block [&_strong]:truncate [&_small]:block [&_small]:truncate [&_small]:text-xs [&_small]:text-muted-foreground">
+							<strong>
+								{ invitationLabel(invitation) }
+								@c.Pill(c.PillProps{Tone: invitationTone(invitation)}) {
+									{ invitationStatus(invitation) }
+								}
+							</strong>
+							<small>{ invitation.Email } · invited as { roleLabel(invitation.Role) }</small>
+						</div>
+						<div class="flex items-center gap-2">
+							<form method="post" action={ "/settings/invitations/" + invitation.ID + "/resend" } hx-post={ "/settings/invitations/" + invitation.ID + "/resend" }>
+								@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit"}}) {
+									Resend
+								}
+							</form>
+							<form method="post" action={ "/settings/invitations/" + invitation.ID + "/delete" } hx-post={ "/settings/invitations/" + invitation.ID + "/delete" }>
+								@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Size: c.ButtonIcon, Attrs: templ.Attributes{"type": "submit", "aria-label": "Revoke invitation"}}) {
+									@c.Icon("trash-2")
+								}
+							</form>
+						</div>
+					</div>
+				}
+			</div>
+		}
+	}
+}
+
+// invitationLabel prefers the name the inviting administrator typed. Before the
+// name was stored, there was nothing to show but the address.
+func invitationLabel(invitation auth.Invitation) string {
+	if invitation.Name != "" {
+		return invitation.Name
+	}
+	return invitation.Email
+}
+
+// invitationStatus says whether the link still works, which is the only thing an
+// administrator looking at this list wants to know.
+func invitationStatus(invitation auth.Invitation) string {
+	if time.Now().After(invitation.ExpiresAt) {
+		return "Expired"
+	}
+	return "Expires " + invitation.ExpiresAt.Format("January 2")
+}
+
+func invitationTone(invitation auth.Invitation) c.Tone {
+	if time.Now().After(invitation.ExpiresAt) {
+		return c.ToneDestructive
+	}
+	return c.ToneWarning
+}
+
+func invitationCount(pending []auth.Invitation) string {
+	if len(pending) == 1 {
+		return "1 invitation"
+	}
+	return strconv.Itoa(len(pending)) + " invitations"
+}

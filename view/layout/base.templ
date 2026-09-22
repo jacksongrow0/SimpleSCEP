@@ -1,0 +1,136 @@
+package layout
+
+import (
+	"context"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/toast"
+)
+
+templ Base(title string) {
+	<!DOCTYPE html>
+	<html lang="en" class="min-h-full overflow-y-scroll bg-background text-foreground [color-scheme:dark] [scrollbar-gutter:stable]">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="description" content="SimpleSCEP self-hosted private PKI dashboard"/>
+			// Said here as well as in the X-Robots-Tag header middleware.SecurityHeaders
+			// sets, because the two are read by different things: the header
+			// covers every response including the ones that are not HTML, and
+			// this covers a crawler that renders the page and never looks at the
+			// headers again. See internal/middleware/headers.go for why neither
+			// of them is a robots.txt Disallow.
+			<meta name="robots" content="noindex, nofollow"/>
+			<title>{ title }</title>
+			// The version query is not decoration. app.css is served with a
+			// Last-Modified and no Cache-Control, so a browser is free to reuse
+			// its copy without revalidating — and Tailwind emits a rule only for
+			// a class some template actually uses, so the first template to use
+			// a class ships markup that the cached sheet has no rules for. That
+			// failure is silent and looks like a broken component rather than a
+			// stale file: c.SwitchInput introduced sr-only, peer-checked: and
+			// has-[:checked]:, none of which existed in the build before it, and
+			// against the previous sheet its hidden checkbox rendered as a bare
+			// checkbox beside an unstyled span. Bump this when a change adds a
+			// utility class the previous build had no reason to generate.
+			// mfa.js above carries one for the same reason.
+			<link rel="stylesheet" href="/static/app.css?v=20260829-1"/>
+			// The brand's own files, out of public/assets. The .ico is at the
+			// root because that is where a browser looks for it unasked, and
+			// where old ones look regardless of what is declared here.
+			<link rel="icon" href="/favicon.ico" sizes="32x32"/>
+			<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml"/>
+			<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png"/>
+			<link rel="manifest" href="/assets/site.webmanifest"/>
+			// The colour the browser paints around the page — the address bar on
+			// Android, the title bar of an installed window. It is --background
+			// from input.css resolved to sRGB, because neither place accepts an
+			// oklch() or a custom property.
+			<meta name="theme-color" content="#040e1a"/>
+			// Both scripts are served from static/ rather than a CDN, copied out of
+			// node_modules by npm run js:build alongside the Tailwind build. A CDN
+			// that served altered bytes would get script execution on every
+			// authenticated page of a product that holds CA keys, and SRI could not
+			// cover the bare unpkg package URL this used to request, which redirects
+			// to whatever the package main field points at. The versions are pinned
+			// exactly in package.json so an install cannot quietly change them.
+			<script src="/static/htmx.min.js" defer></script>
+			<script src="/static/hyperscript.min.js" defer></script>
+			@localTime()
+			// The toast renderer. Plain JavaScript rather than a data-script,
+			// for the reasons scripts.go sets out at length: hyperscript fails
+			// silently, installing none of an element's script for one bad
+			// token, and no Go test can reach it.
+			<script src="/static/toast.js" defer></script>
+		</head>
+		<body class="m-0 min-h-full bg-background font-sans text-sm leading-[1.5] text-foreground [&_p]:my-[1em]">
+			{ children... }
+			// Here rather than in App, so the sign-in pages have one too. They
+			// are single-form cards, and the message under the button is right
+			// for a rejected field — but "a sign-in link is on its way" is not
+			// about a field, and neither is "your session ended". Those are
+			// notifications, and they had nowhere to go while the region was
+			// mounted on the authenticated shell only.
+			@Toast()
+		</body>
+	</html>
+}
+
+// localTime rewrites every <time data-local> the server rendered in UTC into
+// the viewer's own timezone. The server cannot know that zone, so it emits the
+// instant in datetime= and a UTC rendering as the text; this replaces the text
+// once per element, marking each so htmx swaps only convert new nodes.
+
+script localTime() {
+	const render = (root) => {
+		const scope = root && root.querySelectorAll ? root : document;
+		for (const el of scope.querySelectorAll("time[data-local]:not([data-localized])")) {
+			const at = new Date(el.getAttribute("datetime"));
+			if (isNaN(at.getTime())) continue;
+			el.textContent = el.getAttribute("data-local") === "date"
+				? at.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+				: at.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+			el.title = at.toISOString();
+			el.setAttribute("data-localized", "");
+		}
+	};
+	document.addEventListener("DOMContentLoaded", () => render(document));
+	document.addEventListener("htmx:afterSwap", (e) => render(e.target));
+	render(document);
+}
+
+// Toast is the host every notification is rendered into. It is a region rather
+// than an element: the version this replaced was a single div, so a second
+// message overwrote the first and the first message's timer then hid the second
+// one early.
+//
+// It also used to raise itself, on a blanket rule that toasted "Saved
+// successfully" whenever an htmx request to a form succeeded. That rule was
+// wrong in the one case it most needed to be right. All three FormError helpers
+// answer 200 so htmx will swap the error fragment, so `successful` was true for
+// a rejected certificate authority, a bad code, a refused delete — every one of
+// which reported that it had saved. Nothing raises a toast for itself now; the
+// message is named by whoever knows what happened.
+//
+// The rendering lives in assets/js/toast.js, served from /static/toast.js.
+// See that file for why it is not hyperscript.
+templ Toast() {
+	<div
+		id="toast-region"
+		class="pointer-events-none fixed right-5 bottom-5 z-[100] flex w-[min(24rem,calc(100vw-2.5rem))] flex-col-reverse gap-2"
+		role="status"
+		aria-live="polite"
+		{ initialToast(ctx)... }
+	></div>
+}
+
+// initialToast renders a message left behind by an action that redirected here.
+// It reads the request context rather than taking a parameter, which is what
+// keeps this change off the twenty @layout.App call sites and out of the
+// shellSession adapters. middleware.Flash puts it there.
+func initialToast(ctx context.Context) templ.Attributes {
+	m, ok := toast.FromContext(ctx)
+	if !ok {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{"data-initial-tone": string(m.Tone), "data-initial-text": m.Text}
+}

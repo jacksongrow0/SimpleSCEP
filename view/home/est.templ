@@ -1,0 +1,553 @@
+package home
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strconv"
+	"time"
+)
+
+// ESTEndpointRow is one endpoint on the list page.
+type ESTEndpointRow struct {
+	ID, Name, CAName, Path string
+	Enabled                bool
+	Credentials            int
+	RecentIssued           int
+}
+
+// ESTEndpoint is one endpoint's administration page. Like its ACME counterpart
+// and unlike SCEP's it carries no registration authority fingerprint: EST
+// responses are unsigned certs-only PKCS#7, so an endpoint holds no key material.
+type ESTEndpoint struct {
+	ID, Name, CAName           string
+	BaseURL                    string
+	SubjectPattern, SANPattern string
+	CAFingerprint              string
+	Enabled                    bool
+	ValidityDays               int
+	RenewalWindowDays          int
+	// ReenrollRequiresSameKey makes re-enrolment prove possession of the key the
+	// certificate being renewed was issued for, rather than only the credential.
+	ReenrollRequiresSameKey bool
+	// APIBase is this endpoint's administration prefix, so the forms below
+	// concatenate rather than each learning how to build the path.
+	APIBase string
+	// LiveCertificates is how many certificates this endpoint issued that are
+	// still neither revoked nor expired — the devices that would be affected by
+	// deleting it.
+	LiveCertificates int
+	EKUs             []ProtocolEKU
+}
+
+// ESTCredential is one HTTP Basic identity. The password is deliberately absent:
+// it exists in a readable form for exactly one response, and only its argon2id
+// verifier is stored.
+type ESTCredential struct {
+	ID, Label, Username string
+	IdentifierPin       string
+	Revoked             bool
+	ExpiresAt           *time.Time
+	LastUsedAt          *time.Time
+	CreatedAt           time.Time
+}
+
+// Status renders what a credential can currently do, which is the only thing an
+// administrator looking at the list wants to know.
+//
+// There is no "Used" state as there is for ACME: an EST credential is presented
+// again on every enrollment and every renewal, so being used is not a state it
+// passes through.
+func (cr ESTCredential) Status() string {
+	switch {
+	case cr.Revoked:
+		return "Revoked"
+	case cr.ExpiresAt != nil && !cr.ExpiresAt.After(time.Now()):
+		return "Expired"
+	}
+	return "Active"
+}
+
+func (cr ESTCredential) Live() bool { return cr.Status() == "Active" }
+
+// ESTEnrollment is one row of the enrollment log.
+//
+// Result is whether the device got in; CertificateStatus is whether what it got
+// is still valid. A refused enrollment has only the first, which is the whole
+// point of recording refusals — a device that never gets a certificate would
+// otherwise leave no trace on the page an operator is looking at.
+type ESTEnrollment struct {
+	Subject, Operation, Credential string
+	Result, FailureReason          string
+	Serial, CertificateStatus      string
+	ExpiresAt                      *time.Time
+	CreatedAt                      time.Time
+}
+
+// Failed reports whether this attempt was refused.
+func (n ESTEnrollment) Failed() bool { return n.Result == "failed" }
+
+// ESTEndpointData is one endpoint's administration page.
+type ESTEndpointData struct {
+	Endpoint    ESTEndpoint
+	Credentials []ESTCredential
+	Enrollments []ESTEnrollment
+}
+
+type ESTPage struct {
+	Endpoints []ESTEndpointRow
+	CAs       []ProtocolCA
+}
+
+templ ESTPanel(data ESTPage) {
+	<div class="stack flex flex-col gap-6">
+		@ESTIntro()
+		if len(data.Endpoints) == 0 {
+			@c.EmptyState(c.EmptyStateProps{Icon: "radio", Title: "No EST endpoints yet", Description: "An endpoint is one EST base URL bound to an issuing CA. Point strongSwan, a Cisco router, or an IoT fleet at it and they enroll and re-enroll on their own.", Compact: true, Muted: true}) {
+				if len(data.CAs) == 0 {
+					<p class="text-sm text-muted-foreground">Create an active issuing CA first.</p>
+					@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+						<span>Go to Certificate Authorities</span>@c.Icon("arrow-up-right")
+					}
+				} else {
+					@c.Button(c.ButtonProps{Attrs: templ.Attributes{"data-script": "on click call document.getElementById('est-setup-dialog').showModal()"}}) {
+						@c.Icon("plus")
+						<span>Add endpoint</span>
+					}
+				}
+				<p class="mt-3 text-sm text-muted-foreground">
+					<a href={ templ.SafeURL(layout.DocsESTURL) } target="_blank" rel="noopener" class="underline underline-offset-2">Read the EST setup guide</a>
+				</p>
+			}
+		} else {
+			@ESTEndpointList(data)
+		}
+	</div>
+	@ESTSetupDialog(data.CAs)
+}
+
+// ESTIntro explains the one thing about this implementation that will surprise
+// anyone who knows RFC 7030. Leaving it to the documentation would mean an
+// administrator's first encounter with it is a client rejecting a certificate
+// they configured it to present.
+templ ESTIntro() {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">How enrollment is authenticated</h4>
+		<p class="mt-1 mb-0 text-sm text-muted-foreground">
+			RFC 7030 normally authenticates a client by the TLS client certificate it presents. TLS terminates ahead of SimpleSCEP, so that certificate never reaches us and we use the alternative the specification allows instead: <strong>HTTP Basic</strong>, with credentials you mint here. Re-enrollment is authenticated by the same credential plus a check that the subject already holds a live certificate from this endpoint, inside its renewal window.
+		</p>
+	</div>
+}
+
+templ ESTEndpointList(data ESTPage) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">EST endpoints</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Each endpoint is its own base URL, issuing CA, issuance policy, and set of credentials.</p>
+			</div>
+			if len(data.CAs) > 0 {
+				@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"data-script": "on click call document.getElementById('est-setup-dialog').showModal()"}}) {
+					@c.Icon("plus")
+					<span>Add endpoint</span>
+				}
+			}
+		</div>
+		<div class="mt-4 overflow-x-auto">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="text-left text-muted-foreground">
+						<th class="py-2 pr-4 font-medium">Name</th>
+						<th class="py-2 pr-4 font-medium">Issuing CA</th>
+						<th class="py-2 pr-4 font-medium">Status</th>
+						<th class="py-2 pr-4 font-medium">Credentials</th>
+						<th class="py-2 font-medium">Issued (30d)</th>
+					</tr>
+				</thead>
+				<tbody>
+					for _, e := range data.Endpoints {
+						<tr class="border-t border-border">
+							<td class="py-2 pr-4">
+								<a href={ templ.SafeURL(e.Path) } class="font-medium underline-offset-2 hover:underline">{ e.Name }</a>
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ e.CAName }</td>
+							<td class="py-2 pr-4">
+								if e.Enabled {
+									@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+										On
+									}
+								} else {
+									@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+										Off
+									}
+								}
+							</td>
+							<td class="py-2 pr-4 text-muted-foreground">{ strconv.Itoa(e.Credentials) }</td>
+							<td class="py-2 text-muted-foreground">{ strconv.Itoa(e.RecentIssued) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+
+templ ESTEndpointSummary(e ESTEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<div class="flex items-center gap-2">
+					<h4 class="m-0 font-bold">{ e.Name }</h4>
+					if e.Enabled {
+						@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+							Accepting enrollments
+						}
+					} else {
+						@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+							Off
+						}
+					}
+				</div>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">This is the base URL you configure a client with. Issuing CA: { e.CAName }.</p>
+			</div>
+			@ToggleForm(e.APIBase+"/enabled", "endpoint-error", e.Enabled, "")
+		</div>
+		<div class="mt-4 grid gap-4">
+			@SecretBlock("EST base URL", e.BaseURL)
+			<p class="m-0 text-sm text-muted-foreground">
+				Operations hang off this URL: <code class="font-mono text-xs">/cacerts</code>, <code class="font-mono text-xs">/simpleenroll</code>, <code class="font-mono text-xs">/simplereenroll</code>, and <code class="font-mono text-xs">/csrattrs</code>. Most clients want the base URL and add the operation themselves.
+			</p>
+			<p class="m-0 text-sm text-muted-foreground">
+				<code class="font-mono text-xs">/cacerts</code> is the one operation that needs no credentials, so a device can fetch the chain before it trusts anything. Everything else needs a client to already trust this root, or its request fails TLS verification before it reaches EST at all.
+				if e.CAFingerprint != "" {
+					Issuing CA SHA-256: <code class="font-mono text-xs break-all">{ e.CAFingerprint }</code>
+				}
+			</p>
+		</div>
+		<p id="endpoint-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+templ ESTCredentialList(e ESTEndpoint, credentials []ESTCredential) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Enrollment credentials</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">Each credential is a username and password a client sends as HTTP Basic. The password is shown once, when you mint it, and cannot be recovered afterwards.</p>
+			</div>
+			@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('est-credential-dialog').showModal()"}}) {
+				@c.Icon("plus")
+				<span>Mint credential</span>
+			}
+		</div>
+		if len(credentials) == 0 {
+			<p class="mt-3 mb-0 text-sm text-muted-foreground">No credentials yet. A client cannot enroll until it has one.</p>
+		} else {
+			<div class="mt-4 overflow-x-auto">
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="text-left text-muted-foreground">
+							<th class="py-2 pr-4 font-medium">Label</th>
+							<th class="py-2 pr-4 font-medium">Username</th>
+							<th class="py-2 pr-4 font-medium">Pinned to</th>
+							<th class="py-2 pr-4 font-medium">Status</th>
+							<th class="py-2 font-medium"></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, cr := range credentials {
+							<tr class="border-t border-border">
+								<td class="py-2 pr-4">
+									if cr.Label != "" {
+										{ cr.Label }
+									} else {
+										<span class="text-muted-foreground">Unlabelled</span>
+									}
+								</td>
+								<td class="py-2 pr-4 font-mono text-xs break-all text-muted-foreground">{ cr.Username }</td>
+								<td class="py-2 pr-4 text-muted-foreground">
+									if cr.IdentifierPin != "" {
+										{ cr.IdentifierPin }
+									} else {
+										Endpoint policy
+									}
+								</td>
+								<td class="py-2 pr-4">
+									if cr.Live() {
+										@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+											{ cr.Status() }
+										}
+									} else {
+										@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+											{ cr.Status() }
+										}
+									}
+								</td>
+								<td class="py-2">
+									if !cr.Revoked {
+										<form
+											method="post"
+											action={ templ.SafeURL(e.APIBase + "/credentials/" + cr.ID + "/revoke") }
+											hx-post={ e.APIBase + "/credentials/" + cr.ID + "/revoke" }
+											hx-target="#credential-error"
+											hx-swap="innerHTML"
+										>
+											@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall}) {
+												Revoke
+											}
+										</form>
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			<p class="mt-3 mb-0 text-sm text-muted-foreground">Revoking a credential stops the next enrollment and the next renewal. Certificates it already issued keep working until they expire; to stop those, revoke them from <a href="/certificates" class="underline underline-offset-2">Certificates</a>.</p>
+		}
+		<p id="credential-error" class="mt-2 mb-0 text-sm"></p>
+	</div>
+}
+
+templ ESTIssuancePolicy(e ESTEndpoint) {
+	<div class="rounded-xl border border-border p-4">
+		<div class="flex items-start justify-between gap-4">
+			<div>
+				<h4 class="m-0 font-bold">Issuance policy</h4>
+				<p class="mt-1 mb-0 text-sm text-muted-foreground">What every certificate enrolled through this endpoint looks like, and which names a client may ask for.</p>
+			</div>
+			@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-script": "on click call document.getElementById('est-policy-dialog').showModal()"}}) {
+				Edit
+			}
+		</div>
+		<div class="mt-4 grid gap-4 grid-cols-4 max-md:grid-cols-1">
+			@c.Info("Validity", strconv.Itoa(e.ValidityDays)+" days")
+			@c.Info("Renewal window", strconv.Itoa(e.RenewalWindowDays)+" days")
+			@c.Info("Subject pattern", patternLabel(e.SubjectPattern))
+			@SANPatternInfo(e.SANPattern)
+		</div>
+		<p class="mt-3 mb-0 text-sm text-muted-foreground">The renewal window is how early <code class="font-mono text-xs">/simplereenroll</code> starts working. A device that asks sooner is told the date it may come back, so a misconfigured renewal timer reports itself instead of failing silently.</p>
+	</div>
+}
+
+templ ESTEnrollmentLog(enrollments []ESTEnrollment) {
+	<div class="rounded-xl border border-border p-4">
+		<h4 class="m-0 font-bold">Recent enrollments</h4>
+		if len(enrollments) == 0 {
+			<p class="mt-1 mb-0 text-sm text-muted-foreground">Nothing yet. Enrollments appear here as devices enroll and re-enroll, including the ones that were refused and why.</p>
+		} else {
+			<div class="mt-3 overflow-x-auto">
+				<table class="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_th]:border-b [&_th]:border-border [&_th]:p-2 [&_th]:text-left [&_th]:text-xs [&_th]:uppercase [&_th]:tracking-[.1em] [&_th]:text-muted-foreground [&_td]:border-b [&_td]:border-border [&_td]:p-2 [&_td]:align-top">
+					<thead><tr><th>Time</th><th>Subject</th><th>Operation</th><th>Credential</th><th>Result</th></tr></thead>
+					<tbody>
+						for _, n := range enrollments {
+							<tr>
+								<td class="whitespace-nowrap">{ n.CreatedAt.UTC().Format("2006-01-02 15:04:05Z") }</td>
+								<td class="break-all">{ n.Subject }</td>
+								<td>
+									if n.Operation == "reenroll" {
+										@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+											Renewal
+										}
+									} else {
+										@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+											Enrollment
+										}
+									}
+								</td>
+								<td class="text-muted-foreground">
+									if n.Credential != "" {
+										{ n.Credential }
+									} else {
+										<span class="text-muted-foreground">Deleted</span>
+									}
+								</td>
+								<td>
+									if n.Failed() {
+										@c.Pill(c.PillProps{Tone: c.ToneDestructive}) {
+											Refused
+										}
+										if n.FailureReason != "" {
+											<p class="mt-1 mb-0 text-xs text-muted-foreground">{ n.FailureReason }</p>
+										}
+									} else if n.CertificateStatus == "revoked" {
+										@c.Pill(c.PillProps{Tone: c.ToneDestructive}) {
+											Revoked
+										}
+									} else if n.CertificateStatus == "expired" {
+										@c.Pill(c.PillProps{Tone: c.ToneNeutral}) {
+											Expired
+										}
+									} else {
+										@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+											Issued
+										}
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	</div>
+}
+
+templ ESTSetupDialog(cas []ProtocolCA) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "est-setup-dialog"}}) {
+		<form method="post" action="/api/est/endpoints" hx-post="/api/est/endpoints" hx-target="#est-setup-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Add an EST endpoint", Description: "This creates a base URL. The issuing CA is fixed once created; everything else can change later."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "How you will recognize this endpoint, e.g. Branch VPN gateways. Up to 64 characters."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "placeholder": "Branch VPN gateways"}})
+				}
+				@c.Field(c.FieldProps{Label: "Issuing CA", Hint: "Every certificate enrolled through this endpoint is signed by this CA."}) {
+					@c.Select(templ.Attributes{"name": "ca_id", "required": true}) {
+						for _, ca := range cas {
+							<option value={ ca.ID }>{ ca.Name }</option>
+						}
+					}
+				}
+				<p id="est-setup-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Create endpoint
+				}
+			}
+		</form>
+	}
+}
+
+templ ESTCredentialDialog(e ESTEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "est-credential-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/credentials") } hx-post={ e.APIBase + "/credentials" } hx-target="#est-credential-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Mint an enrollment credential", Description: "This is what a client authenticates with, on first enrollment and on every renewal afterwards."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id="est-credential-dialog-fields" class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Username", Hint: "What the client sends as the Basic username. No spaces or colons; up to 64 characters."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "username", "required": true, "maxlength": "64", "placeholder": "branch-gateways"}})
+					}
+					@c.Field(c.FieldProps{Label: "Label", Hint: "For your own records, e.g. Munich branch. Up to 64 characters."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "label", "maxlength": "64", "placeholder": "Munich branch"}})
+					}
+					@c.Field(c.FieldProps{Label: "Pin to these names (optional)", Hint: "Comma-separated. A client using this credential can then enroll only these exact names, whatever the endpoint policy would otherwise allow. Leave blank to fall back to the patterns."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "identifiers", "placeholder": "gw-muc-01.example.internal"}})
+					}
+					@c.Field(c.FieldProps{Label: "Expires after (hours)", Hint: "Leave blank for a credential that does not expire. Unlike ACME, this credential is needed for renewals too, so an expiry stops a device renewing — set one only for a bounded provisioning window."}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "ttl_hours", "type": "number", "min": "1", "placeholder": "72"}})
+					}
+				</div>
+				<p id="est-credential-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			<div id="est-credential-dialog-actions">
+				@c.DialogActions(nil) {
+					@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+						Cancel
+					}
+					@c.Button(c.ButtonProps{}) {
+						Mint credential
+					}
+				}
+			</div>
+		</form>
+	}
+}
+
+// ESTCredentialSecret is swapped into the mint dialog in place of its form. This
+// is the only moment the password exists in a readable form anywhere, which is
+// why it replaces the dialog rather than redirecting: a navigation would lose it.
+templ ESTCredentialSecret(baseURL string, username string, password string, returnURL string) {
+	<div class="grid gap-4" data-script="init add @hidden to #est-credential-dialog-fields then add @hidden to #est-credential-dialog-actions">
+		<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+			<span>
+				@c.Icon("circle-alert")
+			</span>
+			<div class="text-sm"><strong>Copy this now.</strong> The password is not stored in a form anyone can read back, including us. If you lose it, mint another credential.</div>
+		</div>
+		@SecretBlock("EST base URL", baseURL)
+		@SecretBlock("Username", username)
+		@SecretBlock("Password", password)
+		// Collapsed by default: this dialog already carries a warning and three
+		// copyable secrets, and the Done button above the fold matters more than
+		// four clients' worth of setup flags. Expanding it is one click away.
+		<details class="text-sm text-muted-foreground [&_summary]:cursor-pointer [&_summary]:text-primary [&_summary]:font-medium">
+			<summary>Configuring a client</summary>
+			<ul class="m-0 mt-2 grid list-disc gap-1.5 pl-5">
+				<li><strong class="text-foreground">strongSwan:</strong> <code class="font-mono text-xs">pki --est --url</code> set to the base URL, with <code class="font-mono text-xs">--userpass</code> carrying <code class="font-mono text-xs">username:password</code>.</li>
+				<li><strong class="text-foreground">Cisco IOS:</strong> a trustpoint with <code class="font-mono text-xs">enrollment url</code> set to the base URL and <code class="font-mono text-xs">enrollment credential</code> holding the pair.</li>
+				<li><strong class="text-foreground">libest:</strong> <code class="font-mono text-xs">estclient</code> takes the host and port as <code class="font-mono text-xs">-s</code> and <code class="font-mono text-xs">-p</code>, and the credential as <code class="font-mono text-xs">-u</code> and <code class="font-mono text-xs">-h</code>.</li>
+				<li><strong class="text-foreground">curl:</strong> post the base64 CSR to <code class="font-mono text-xs">{ baseURL }/simpleenroll</code> with <code class="font-mono text-xs">-u username:password</code> and <code class="font-mono text-xs">-H 'Content-Type: application/pkcs10'</code>.</li>
+			</ul>
+		</details>
+		<div class="flex justify-end">
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '" + returnURL + "'"}}) {
+				Done
+			}
+		</div>
+	</div>
+}
+
+templ ESTPolicyDialog(e ESTEndpoint) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "est-policy-dialog"}}) {
+		<form method="post" action={ templ.SafeURL(e.APIBase + "/policy") } hx-post={ e.APIBase + "/policy" } hx-target="#est-policy-result">
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Issuance policy", Description: "SimpleSCEP issues exactly what the client's CSR asks for, so these patterns are the guardrail on what a client may ask for."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				@c.Field(c.FieldProps{Label: "Name", Hint: "Renaming does not change the base URL, so configured clients are unaffected."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "maxlength": "64", "value": e.Name}})
+				}
+				@c.Field(c.FieldProps{Label: "Validity (days)", Hint: "1 to 3650. EST enrols infrastructure that renews on its own, but a gateway rebooted rarely wants a longer life than a web server."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "validity_days", "type": "number", "required": true, "min": "1", "max": "3650", "value": strconv.Itoa(e.ValidityDays)}})
+				}
+				@c.Field(c.FieldProps{Label: "Renewal window (days)", Hint: "1 to 365. How long before expiry a device may re-enroll. Give a device several attempts before its certificate lapses."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "renewal_window_days", "type": "number", "required": true, "min": "1", "max": "365", "value": strconv.Itoa(e.RenewalWindowDays)}})
+				}
+				@c.Field(c.FieldProps{Label: "Subject pattern", Hint: "Regular expression the CSR subject must match. Leave blank to allow any subject."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "subject_pattern", "value": e.SubjectPattern, "placeholder": ".+"}})
+				}
+				@c.Field(c.FieldProps{Label: "SAN pattern", Hint: "Regular expression every subject alternative name in the CSR must match. Leave blank to permit no SANs at all — or use .* to allow any."}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_pattern", "value": e.SANPattern, "placeholder": ".*\\.internal"}})
+				}
+				@c.Field(c.FieldProps{Label: "Re-enrolment key continuity", Hint: "RFC 7030 proves re-enrolment with the certificate the client holds, over mutual TLS. TLS ends at our edge, so that certificate never reaches us and re-enrolment is bound to the credential that enrolled the subject. Requiring the same key adds a real proof of possession, at the cost of preventing key rotation at renewal."}) {
+					<label class="flex items-start gap-2 text-sm">
+						if e.ReenrollRequiresSameKey {
+							<input type="checkbox" name="reenroll_requires_same_key" checked/>
+						} else {
+							<input type="checkbox" name="reenroll_requires_same_key"/>
+						}
+						<span>Require the CSR to reuse the key of the certificate being renewed</span>
+					</label>
+				}
+				@c.Field(c.FieldProps{Label: "Permitted extended key usages", Hint: "The ceiling on what a CSR may ask for. A request that asks for a subset is issued that subset; one that asks for something outside it is refused. Usages absent from the issuing CA's profile cannot be offered."}) {
+					<div class="grid gap-2 grid-cols-2 max-md:grid-cols-1">
+						for _, eku := range e.EKUs {
+							<label class="flex items-start gap-2 text-sm">
+								if !eku.Available {
+									<input type="checkbox" disabled/>
+									<span class="text-muted-foreground">{ eku.Label } (not in CA profile)</span>
+								} else if eku.Allowed {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token } checked/>
+									<span>{ eku.Label }</span>
+								} else {
+									<input type="checkbox" name="allowed_eku" value={ eku.Token }/>
+									<span>{ eku.Label }</span>
+								}
+							</label>
+						}
+					</div>
+				}
+				<p id="est-policy-result" class="m-0 text-sm text-muted-foreground"></p>
+			}
+			@c.DialogActions(nil) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Save policy
+				}
+			}
+		</form>
+	}
+}

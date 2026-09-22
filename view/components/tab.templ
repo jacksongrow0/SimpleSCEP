@@ -1,0 +1,7 @@
+package components
+
+templ Tab(props SegmentProps) {
+	<button { mergeAttrs(segmentClass("tab", props.Active), withDefault(withDefault(withDefault(props.Attrs, "type", "button"), "role", "tab"), "aria-selected", boolString(props.Active)))... }>
+		{ children... }
+	</button>
+}

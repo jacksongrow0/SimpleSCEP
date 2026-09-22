@@ -1,0 +1,178 @@
+package auth
+
+import (
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// authShell is the card Login and Signup already use, lifted so the
+// second-factor pages sit on the same page rather than on a near-copy of it. A
+// user arrives here mid-sign-in; a visual change at that moment reads as having
+// been redirected somewhere unexpected, which is the last thing a security
+// prompt should suggest.
+templ authShell(title, heading, blurb string) {
+	@layout.Base(title) {
+		<div class="auth-page grid min-h-screen place-items-center bg-background p-4 [background-image:radial-gradient(ellipse_at_top,oklch(0.28_0.08_240),var(--color-background)_60%)]">
+			<section class="auth-panel w-full">
+				<div class="auth-card mx-auto w-[min(448px,100%)] rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-card)_90%,transparent)] p-6 shadow-[0_1px_3px_#0003] [&>.logo]:mb-7 [&>.logo]:justify-center [&>h2]:m-0 [&>h2]:text-2xl [&>h2]:font-bold [&>p]:mt-1.5 [&>p]:mb-5 [&>p]:text-muted-foreground [&_form]:grid [&_form]:gap-4">
+					@layout.Logo()
+					<h2>{ heading }</h2>
+					<p>{ blurb }</p>
+					{ children... }
+				</div>
+			</section>
+		</div>
+	}
+}
+
+// Enroll asks a user with no second factor to register one. There is no "skip"
+// and no "remind me later": this page is the only way to a session, which is
+// what makes the requirement mandatory rather than encouraged.
+templ Enroll(secret string) {
+	@authShell("Set up two-factor authentication · SimpleSCEP", "Secure your account",
+		"SimpleSCEP holds your certificate authority keys, so every account needs a second factor. Scan this with an authenticator app.") {
+		<div class="grid justify-items-center gap-4">
+			// Its own request rather than a data: URI, so the shared secret never
+			// enters the HTML body — where it would sit in view-source, in any
+			// intermediary that buffers the page, and in htmx's swap history.
+			<img
+				src="/auth/2fa/qr.png"
+				alt="QR code for your authenticator app"
+				width="240"
+				height="240"
+				class="rounded-lg bg-white p-2"
+			/>
+			<details class="w-full text-sm text-muted-foreground [&_summary]:cursor-pointer [&_summary]:text-primary">
+				<summary>Can't scan the code?</summary>
+				<p class="mt-2">Enter this key in your authenticator instead:</p>
+				<code class="mt-1 block break-all rounded-md border border-border bg-muted p-2 font-mono tracking-wider">{ secret }</code>
+			</details>
+		</div>
+		// hx-swap="none" rather than a target: a rejected code is a toast now,
+		// and the response carries nothing to put on the page. Without it htmx
+		// falls back to swapping into the form itself, which would replace the
+		// field with an empty body and lose what was typed.
+		<form method="post" action="/auth/2fa/enroll" hx-post="/auth/2fa/enroll" hx-swap="none">
+			@c.Field(c.FieldProps{Label: "Enter the 6-digit code from your app"}) {
+				@c.Input(c.InputProps{Attrs: codeAttrs("one-time-code", nil)})
+			}
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+				Confirm and continue →
+			}
+		</form>
+	}
+}
+
+// Verify asks a returning user for a code.
+templ Verify() {
+	@authShell("Two-factor authentication · SimpleSCEP", "One more step",
+		"Enter the code from your authenticator app to finish signing in.") {
+		<form method="post" action="/auth/2fa/totp" hx-post="/auth/2fa/totp" hx-swap="none">
+			@c.Field(c.FieldProps{Label: "6-digit code"}) {
+				@c.Input(c.InputProps{Attrs: codeAttrs("one-time-code", nil)})
+			}
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+				Verify →
+			}
+		</form>
+		// Rendered hidden and revealed by mfa.js only where the API exists, so a
+		// browser without WebAuthn simply sees the code field, which always works.
+		// The ceremony starts only from this explicit click; an automatic request
+		// can select the system provider before a browser extension participates.
+		@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{
+			"type": "button", "hidden": true, "class": "mt-3 w-full",
+			"data-passkey-signin": true,
+		}}) {
+			Use a passkey instead
+		}
+		@passkeyScript()
+		<details class="mt-4 text-sm text-muted-foreground [&_summary]:cursor-pointer [&_summary]:text-primary">
+			<summary>Lost your authenticator?</summary>
+			<p class="mt-2">Use one of the recovery codes you saved when you set it up. You'll be asked to register a new authenticator straight away.</p>
+			<form method="post" action="/auth/2fa/recovery" hx-post="/auth/2fa/recovery" hx-swap="none" class="mt-3">
+				@c.Field(c.FieldProps{Label: "Recovery code"}) {
+					@c.Input(c.InputProps{Attrs: templ.Attributes{
+						"name": "code", "required": true, "autocomplete": "off",
+						"spellcheck": "false", "autocapitalize": "characters",
+						"placeholder": "XXXX-XXXX-XXXX-XXXX", "class": "font-mono tracking-wider",
+					}})
+				}
+				@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Attrs: templ.Attributes{"type": "submit"}}) {
+					Use recovery code
+				}
+			</form>
+		</details>
+	}
+}
+
+// RecoveryCodes shows the codes exactly once, on the page that follows a
+// successful enrolment — its own page, reached by a redirect, rather than a
+// block appended under the field that asked for the six digits. The session
+// cookie is already set by the time this renders — the user has proved both
+// factors — so navigating away costs nothing but the codes.
+//
+// It costs the codes permanently, though: they are issued here and nowhere else,
+// and there is no regeneration route to ask for a fresh set. That is why the
+// checkbox below is required rather than advisory.
+templ RecoveryCodes(codes []string) {
+	@authShell("Save your recovery codes · SimpleSCEP", "Save your recovery codes",
+		"These are the only way back into your account if you lose your authenticator. They will not be shown again.") {
+		<ul class="grid grid-cols-2 gap-2 rounded-md border border-border bg-muted p-3 font-mono text-sm tracking-wider">
+			for _, code := range codes {
+				<li class="text-center">{ code }</li>
+			}
+		</ul>
+		<p class="mt-3 text-sm text-muted-foreground">Each code works once. Store them somewhere you can reach without this device — a password manager, or printed and kept safe.</p>
+		<form method="get" action="/" class="mt-4">
+			<label class="flex items-start gap-2 text-sm">
+				// Required rather than advisory: the one thing worse than losing
+				// these is not noticing that you did.
+				<input type="checkbox" required class="mt-1" name="saved"/>
+				<span>I have saved these recovery codes somewhere safe.</span>
+			</label>
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "submit"}}) {
+				Continue to SimpleSCEP →
+			}
+		</form>
+	}
+}
+
+// codeAttrs is the TOTP field's attributes, shared so password-manager
+// recognition, the keyboard and autocomplete stay identical everywhere the
+// code is requested. autocomplete is the standard hint; the explicit text type
+// and TOTP-specific id also give extensions with older heuristics an
+// unambiguous field to recognise. inputmode numeric matters on phones — the
+// alternative is a full keyboard for six digits, under time pressure, with a
+// thirty-second window.
+//
+// The extra attributes are for a caller that needs one more hint on the field;
+// nothing needs one today, and the parameter is what stops the next one
+// copying the map.
+func codeAttrs(autocomplete string, extra templ.Attributes) templ.Attributes {
+	attrs := templ.Attributes{
+		"id": "totp-code", "name": "code", "type": "text",
+		"required": true, "autocomplete": autocomplete,
+		"inputmode": "numeric", "pattern": "[0-9]*", "maxlength": "6",
+		"autofocus": true, "placeholder": "000000",
+		"class": "font-mono text-center text-lg tracking-[0.4em]",
+	}
+	for k, v := range extra {
+		attrs[k] = v
+	}
+	return attrs
+}
+
+// FormError is what an htmx form post swaps in when something is refused. It is
+// served with status 200 because htmx 2 does not swap a non-2xx response, and a
+// silent form is worse than a wrong one.
+templ FormError(message string) {
+	{ message }
+}
+
+// passkeyScript loads the WebAuthn ceremonies for the sign-in prompt. The
+// authenticated shell emits its own copy, because the account settings dialog
+// runs the registration ceremony; the pages that run neither — login, signup —
+// deliberately do not carry it.
+templ passkeyScript() {
+	<script src="/static/mfa.js?v=20260822-1" defer></script>
+}

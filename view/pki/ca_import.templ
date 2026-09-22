@@ -1,0 +1,282 @@
+package pki
+
+import (
+	"fmt"
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+type ImportJob struct {
+	ID, Name, Type, State, Algorithm, WrappingMethod, WrappingPublicKey, FailureReason, ExpiresAt, CreatedAt string
+}
+
+// CAImportWizard imports an existing CA. wantType is the import the reader
+// arrived for ("root" or "issuing"); hasRoot says whether the organization
+// already has a trust anchor, which prevents importing another root.
+templ CAImportWizard(session auth.Session, jobs []ImportJob, keyProvider string, wantType string, hasRoot bool, supportsHSM bool) {
+	@layout.App("Import CA", "cas", pkiShellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Import an existing CA", Description: "Bring an existing CA under managed key protection with " + keyProvider + ". You wrap the private key locally with a KMS wrapping key; the wrapped blob is imported directly and the key never exists here in plaintext.", Responsive: true}) {
+					<div class="button-row flex items-center gap-2 max-md:flex-col max-md:items-stretch">
+						@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+							@c.Icon("chevron-left")
+							<span>Certificate authorities</span>
+						}
+						@c.ButtonLink(c.ButtonLinkProps{Href: layout.DocsImportCAURL, ButtonProps: c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"target": "_blank", "rel": "noopener"}}}) {
+							@c.Icon("book")
+							<span>Import guide</span>
+						}
+					</div>
+				}
+				@c.CardBody(nil) {
+					<form class="grid gap-4" method="post" action="/certificate-authorities/import">
+						@importTypeChoice(wantType, hasRoot)
+						@c.Field(c.FieldProps{Label: "CA name"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "required": true, "placeholder": "Acme Imported CA"}})
+						}
+						@ProtectionSelect(supportsHSM)
+						@c.Field(c.FieldProps{Label: "CA certificate (PEM)"}) {
+							@c.Textarea(templ.Attributes{"name": "certificate", "required": true, "rows": "6", "placeholder": "-----BEGIN CERTIFICATE-----", "spellcheck": "false"})
+						}
+						@c.Field(c.FieldProps{Label: "Chain (PEM, optional — issuing CAs only)"}) {
+							@c.Textarea(templ.Attributes{"name": "chain", "rows": "4", "placeholder": "Intermediate and root certificates, leaf-most first", "spellcheck": "false"})
+						}
+						<p class="text-sm text-muted-foreground">Submit certificates only. Never paste a private key — it is rejected, and the import flow never needs it in plaintext.</p>
+						<div class="text-right">
+							@c.Button(c.ButtonProps{}) {
+								Start import
+							}
+						</div>
+					</form>
+				}
+			}
+			for _, job := range jobs {
+				if !importJobFinished(job) {
+					@c.Card(c.CardProps{}) {
+						@c.CardHeader(c.CardHeaderProps{Title: job.Name, Description: job.Type + " CA · " + job.Algorithm + " · started " + job.CreatedAt})
+						@c.CardBody(nil) {
+							@ImportJobStatus(job)
+						}
+					}
+				}
+			}
+			if n := finishedImportJobCount(jobs); n > 0 {
+				<details class="rounded-xl border border-border p-4 [&_summary]:cursor-pointer [&_summary]:text-sm [&_summary]:font-medium">
+					<summary>Past imports ({ fmt.Sprint(n) })</summary>
+					<div class="mt-4 flex flex-col gap-4">
+						for _, job := range jobs {
+							if importJobFinished(job) {
+								@c.Card(c.CardProps{}) {
+									@c.CardHeader(c.CardHeaderProps{Title: job.Name, Description: job.Type + " CA · " + job.Algorithm + " · started " + job.CreatedAt})
+									@c.CardBody(nil) {
+										@ImportJobStatus(job)
+									}
+								}
+							}
+						}
+					</div>
+				</details>
+			}
+		</div>
+	}
+}
+
+// importTypeChoice replaces the CA-type dropdown. What can be imported depends
+// on whether a root already exists, and a dropdown could not explain why the
+// option was unavailable. The two options are laid out side by side, and one that
+// cannot be chosen says why in the place the choice is made.
+templ importTypeChoice(wantType string, hasRoot bool) {
+	<fieldset class="grid gap-2">
+		<legend class="text-sm font-medium">What are you importing?</legend>
+		<div class="grid gap-3 two grid-cols-2 max-md:grid-cols-1">
+			@importTypeOption("issuing", "Issuing CA", "Signs your device, server, and client certificates. Chains under a root you already trust.", selectedImportType(wantType, hasRoot) == "issuing", "")
+			@importTypeOption("root", "Root CA", "The trust anchor you install on devices. Everything else chains back to it.", selectedImportType(wantType, hasRoot) == "root", rootImportBlocker(hasRoot))
+		</div>
+	</fieldset>
+}
+
+// importTypeOption is one radio card. A blocked option keeps its place in the
+// row — the reader is told what the other choice would be and what it takes —
+// but carries no input, so nothing can submit it.
+templ importTypeOption(value string, title string, description string, selected bool, blocked string) {
+	if blocked == "" {
+		<label class="flex cursor-pointer items-start gap-3 rounded-xl border border-border p-4 transition-[background-color,border-color] duration-150 hover:border-[color-mix(in_oklch,var(--color-primary)_45%,var(--color-border))] has-[:checked]:border-primary has-[:checked]:bg-[color-mix(in_oklch,var(--color-primary)_6%,transparent)]">
+			if selected {
+				<input class="mt-1" type="radio" name="type" value={ value } checked/>
+			} else {
+				<input class="mt-1" type="radio" name="type" value={ value }/>
+			}
+			<span class="grid gap-1">
+				<span class="text-sm font-medium">{ title }</span>
+				<span class="text-sm text-muted-foreground">{ description }</span>
+			</span>
+		</label>
+	} else {
+		<div class="flex items-start gap-3 rounded-xl border border-dashed border-border p-4 text-muted-foreground">
+			<span class="mt-0.5 shrink-0">
+				@c.Icon("lock")
+			</span>
+			<span class="grid gap-1">
+				<span class="text-sm font-medium">{ title }</span>
+				<span class="text-sm">{ blocked }</span>
+			</span>
+		</div>
+	}
+}
+
+// rootImportBlocker returns why the root import cannot be chosen, or "" when it
+// can. An organization may hold only one root CA.
+func rootImportBlocker(hasRoot bool) string {
+	if hasRoot {
+		return "This organization already has a root CA, and it can only have one. Import an issuing CA under it instead."
+	}
+	return ""
+}
+
+// selectedImportType resolves which option opens selected: the one the reader
+// came for when it is available, the issuing import otherwise.
+func selectedImportType(wantType string, hasRoot bool) string {
+	if wantType == "root" && rootImportBlocker(hasRoot) == "" {
+		return "root"
+	}
+	return "issuing"
+}
+
+// importJobFinished reports whether a job reached a terminal state; finished
+// jobs collapse into the "Past imports" section instead of stacking up.
+func importJobFinished(job ImportJob) bool {
+	switch job.State {
+	case "completed", "failed", "expired", "cancelled":
+		return true
+	}
+	return false
+}
+
+func finishedImportJobCount(jobs []ImportJob) int {
+	n := 0
+	for _, job := range jobs {
+		if importJobFinished(job) {
+			n++
+		}
+	}
+	return n
+}
+
+templ ImportJobStatus(job ImportJob) {
+	if job.State == "preparing" || job.State == "importing" {
+		<div id={ "import-job-" + job.ID } class="grid gap-3" hx-get={ "/certificate-authorities/import/" + job.ID + "/status" } hx-trigger="every 3s" hx-swap="outerHTML">
+			@importJobBody(job)
+		</div>
+	} else {
+		<div id={ "import-job-" + job.ID } class="grid gap-3">
+			@importJobBody(job)
+		</div>
+	}
+}
+
+templ importJobBody(job ImportJob) {
+	switch job.State {
+		case "preparing":
+			@c.Pill(c.PillProps{}) {
+				preparing
+			}
+			<p class="text-sm text-muted-foreground">Creating the HSM import job and wrapping key. This usually takes under a minute.</p>
+			@cancelImportButton(job)
+		case "ready_to_wrap":
+			@c.Pill(c.PillProps{}) {
+				ready to wrap
+			}
+			<p class="text-sm text-muted-foreground">
+				Wrap your CA private key on a trusted machine using the wrapping public key below, then paste the base64 wrapped blob.
+				if job.ExpiresAt != "" {
+					This import job expires { job.ExpiresAt }.
+				}
+			</p>
+			@c.Field(c.FieldProps{Label: "Wrapping public key (PEM)"}) {
+				<pre class="overflow-x-auto rounded-lg border border-border bg-muted p-3 text-xs select-all">{ job.WrappingPublicKey }</pre>
+			}
+			@c.Field(c.FieldProps{Label: "Wrapping instructions"}) {
+				<pre class="overflow-x-auto rounded-lg border border-border bg-muted p-3 text-xs">{ wrapInstructions(job.WrappingMethod) }</pre>
+			}
+			<p class="text-sm text-muted-foreground">
+				<a href={ templ.SafeURL(layout.DocsWrapKeyURL) } target="_blank" rel="noopener" class="underline underline-offset-2">What these commands do, and why</a>
+			</p>
+			// The cancel form lives outside the wrapped-key form (nested forms
+			// are invalid HTML and get dropped by the parser); its button below
+			// targets it via the form attribute.
+			<form id={ "cancel-import-" + job.ID } method="post" action={ templ.SafeURL("/certificate-authorities/import/" + job.ID + "/cancel") }></form>
+			<form class="grid gap-3" hx-post={ "/certificate-authorities/import/" + job.ID + "/wrapped-key" } hx-target={ "#import-job-" + job.ID } hx-swap="outerHTML">
+				@c.Field(c.FieldProps{Label: "Wrapped key (base64)"}) {
+					@c.Textarea(templ.Attributes{"name": "wrapped_key", "required": true, "rows": "4", "placeholder": "Paste the wrapped blob only — never your private key", "spellcheck": "false"})
+				}
+				<div class="flex items-center justify-end gap-2">
+					@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"form": "cancel-import-" + job.ID, "formnovalidate": true}}) {
+						Cancel import
+					}
+					@c.Button(c.ButtonProps{}) {
+						Submit wrapped key
+					}
+				</div>
+			</form>
+		case "importing":
+			@c.Pill(c.PillProps{}) {
+				importing
+			}
+			<p class="text-sm text-muted-foreground">The wrapped key is being imported into the key provider and verified against your certificate.</p>
+		case "completed":
+			@c.Pill(c.PillProps{Tone: c.ToneSuccess}) {
+				completed
+			}
+			<p class="text-sm text-muted-foreground">The CA is active with its key held by the key provider, marked as imported.</p>
+			@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities"}) {
+				View certificate authorities
+			}
+		case "failed":
+			@c.Pill(c.PillProps{Tone: c.ToneDestructive}) {
+				failed
+			}
+			<p class="text-sm text-muted-foreground">{ job.FailureReason }</p>
+		case "expired":
+			@c.Pill(c.PillProps{Tone: c.ToneDestructive}) {
+				expired
+			}
+			<p class="text-sm text-muted-foreground">The KMS import job expired before the wrapped key was submitted. Start a new import.</p>
+		case "cancelled":
+			@c.Pill(c.PillProps{}) {
+				cancelled
+			}
+	}
+}
+
+templ cancelImportButton(job ImportJob) {
+	<form method="post" action={ templ.SafeURL("/certificate-authorities/import/" + job.ID + "/cancel") }>
+		@c.Button(c.ButtonProps{Variant: c.ButtonGhost}) {
+			Cancel import
+		}
+	</form>
+}
+
+func wrapInstructions(method string) string {
+	if method == "RSA_OAEP_4096_SHA256" {
+		// Dev/fake provider: single OAEP step (fits EC keys only).
+		return `# Save the wrapping public key above as wrapping-key.pem
+openssl pkcs8 -topk8 -nocrypt -in ca-key.pem -outform DER -out target-key.der
+openssl pkeyutl -encrypt -pubin -inkey wrapping-key.pem \
+  -in target-key.der -out wrapped.bin \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256
+base64 -w0 wrapped.bin   # paste the output below
+shred -u target-key.der`
+	}
+	return `# Save the wrapping public key above as wrapping-key.pem (requires OpenSSL 3.x)
+openssl pkcs8 -topk8 -nocrypt -in ca-key.pem -outform DER -out target-key.der
+openssl rand 32 > temp_aes_key.bin
+openssl pkeyutl -encrypt -pubin -inkey wrapping-key.pem \
+  -in temp_aes_key.bin -out wrapped_aes_key.bin \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256
+openssl enc -id-aes256-wrap-pad -K $(xxd -p temp_aes_key.bin | tr -d '\n') \
+  -iv A65959A6 -in target-key.der -out wrapped_target_key.bin
+cat wrapped_aes_key.bin wrapped_target_key.bin | base64 -w0   # paste the output below
+shred -u temp_aes_key.bin target-key.der`
+}

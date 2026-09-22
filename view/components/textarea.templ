@@ -1,0 +1,7 @@
+package components
+
+templ Textarea(attrs templ.Attributes) {
+	<textarea { mergeAttrs("h-auto w-full resize-y rounded-md border border-border bg-transparent px-3 py-2 text-foreground outline-none shadow-[0_1px_2px_#0002] placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background", attrs)... }>
+		{ children... }
+	</textarea>
+}

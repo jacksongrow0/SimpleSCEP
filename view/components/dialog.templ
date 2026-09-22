@@ -1,0 +1,18 @@
+package components
+
+// Dialog is the single scroll container for its content: the <dialog> element
+// itself scrolls (the UA stylesheet already gives it overflow:auto) and the
+// inner wrapper is left unconstrained. Capping and scrolling both of them, as
+// an earlier version did, produced a second, unusable scrollbar on the outer
+// element for content taller than the viewport.
+//
+// Width comes from --dialog-w so a caller can widen one dialog with an inline
+// style; two competing arbitrary-value width classes would otherwise resolve
+// by stylesheet order rather than by the caller's intent.
+templ Dialog(props DialogProps) {
+	<dialog { mergeAttrs("dialog m-auto max-h-[90vh] w-[min(var(--dialog-w,32rem),calc(100%-2rem))] rounded-xl border border-border bg-popover p-0 text-foreground shadow-[0_24px_80px_#0009] backdrop:bg-[#000b]", withDefault(props.Attrs, "data-script", "on click if target is me close me end"))... }>
+		<div class="dialog-card">
+			{ children... }
+		</div>
+	</dialog>
+}

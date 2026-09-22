@@ -1,0 +1,591 @@
+package pki
+
+import (
+	"encoding/base64"
+	"fmt"
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/home"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+	"strings"
+)
+
+type IssuerOption struct {
+	ID, Name string
+	EKUs     []string
+}
+
+type CertRow struct {
+	ID, CN, Subject, CAName, Profile, Serial, SANs, EKUs, Status, IssuedAt, Expires string
+	Revocable                                                                       bool
+}
+
+type CertificatesData struct {
+	Rows                         []CertRow
+	ServerCAs, ClientCAs, CSRCAs []IssuerOption
+	Identities                   int
+}
+
+templ Certificates(session auth.Session, data CertificatesData) {
+	@layout.App("Certificates", "certificates", pkiShellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			@c.Card(c.CardProps{Attrs: templ.Attributes{"data-tabs": true, "data-script": "on click set tab to the closest <[data-tab]/> to target then if tab take .active from <[data-tab]/> in me for tab then add @hidden to <[data-panel]/> in me when its @data-panel is not (tab's @data-tab) end"}}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Certificates", Description: certificateHeaderCopy(session, data), Responsive: true}) {
+					if session.CanManageCertificates() {
+						<div class="button-row flex items-center gap-2 max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full">
+							@CertAction(session, "Server", "issue-server-dialog", false, len(data.ServerCAs) > 0, "server-cert-tooltip", "No active issuing CA allows server certificates (server_auth)")
+							@CertAction(session, "Client", "issue-client-dialog", true, len(data.ClientCAs) > 0, "client-cert-tooltip", "No active issuing CA allows client certificates (client_auth)")
+							@CertAction(session, "Submit CSR", "csr-dialog", true, len(data.CSRCAs) > 0, "csr-cert-tooltip", "Create an active issuing CA first")
+						</div>
+					}
+				}
+				@c.CardBody(nil) {
+					<div class="toolbar mb-4 flex items-center justify-between gap-3 max-md:flex-col max-md:items-stretch [&_input]:max-w-64 max-md:[&_input]:max-w-none">
+						@c.Tabs(nil) {
+							@c.Tab(c.SegmentProps{Active: true, Attrs: templ.Attributes{"data-tab": "all"}}) {
+								All
+							}
+							@c.Tab(c.SegmentProps{Attrs: templ.Attributes{"data-tab": "server"}}) {
+								Server
+							}
+							@c.Tab(c.SegmentProps{Attrs: templ.Attributes{"data-tab": "client"}}) {
+								Client / Device
+							}
+							@c.Tab(c.SegmentProps{Attrs: templ.Attributes{"data-tab": "csr"}}) {
+								CSR-based
+							}
+						}
+						@c.Input(c.InputProps{Icon: "search", Attrs: templ.Attributes{"data-search": true, "data-script": "on input set query to my value.trim().toLowerCase() then set card to the closest <.card/> to me then for row in <[data-row]/> in card add @hidden to row when not row.textContent.toLowerCase().includes(query) end", "placeholder": "Search by common name"}})
+					</div>
+					<div data-panel="all">
+						if len(data.Rows) == 0 {
+							@c.EmptyState(c.EmptyStateProps{Icon: "shield-check", Title: certificateEmptyTitle(session, data), Description: certificateEmptyCopy(session, data)}) {
+								if len(data.CSRCAs) == 0 {
+									@c.ButtonLink(c.ButtonLinkProps{Href: "/certificate-authorities"}) {
+										Go to Certificate Authorities
+									}
+								}
+							}
+						} else {
+							@CertRows(data.Rows, session)
+						}
+					</div>
+					<div data-panel="server" hidden>
+						if rows := filterCertRows(data.Rows, "server"); len(rows) == 0 {
+							@c.EmptyState(c.EmptyStateProps{Icon: "file-key", Title: "No server certificates", Description: "Issue a certificate for a website, API, VPN, or other TLS workload."})
+						} else {
+							@CertRows(rows, session)
+						}
+					</div>
+					<div data-panel="client" hidden>
+						if rows := filterCertRows(data.Rows, "client"); len(rows) == 0 {
+							@c.EmptyState(c.EmptyStateProps{Icon: "file-key", Title: "No client certificates", Description: "Issue a certificate for a user or managed device."})
+						} else {
+							@CertRows(rows, session)
+						}
+					</div>
+					<div data-panel="csr" hidden>
+						if rows := filterCertRows(data.Rows, "csr"); len(rows) == 0 {
+							@c.EmptyState(c.EmptyStateProps{Icon: "file-key", Title: "No CSR-based certificates", Description: "Submit a PEM-encoded certificate signing request."})
+						} else {
+							@CertRows(rows, session)
+						}
+					</div>
+				}
+			}
+		</div>
+		// Detail dialogs render once, outside the tab panels — rows appear in
+		// both "All" and their profile panel, and duplicating the dialogs
+		// there would duplicate their element ids.
+		for _, row := range data.Rows {
+			@CertDialog(row, session)
+		}
+		if session.CanManageCertificates() {
+			if len(data.ServerCAs) > 0 {
+				@IssueForm("issue-server-dialog", "Issue a server certificate", "Signed by your issuing CA for TLS servers. The key pair is generated for this request and handed to you exactly once.", "server", data.ServerCAs)
+			}
+			if len(data.ClientCAs) > 0 {
+				@IssueForm("issue-client-dialog", "Issue a client certificate", "Signed by your issuing CA for users and devices. The key pair is generated for this request and handed to you exactly once.", "client", data.ClientCAs)
+			}
+			if len(data.CSRCAs) > 0 {
+				@CSRForm("csr-dialog", data.CSRCAs)
+			}
+		}
+	}
+}
+
+// CertAction renders a dialog-opening action button, or a disabled button
+// with an explanatory tooltip when no issuing CA supports the flow.
+templ CertAction(session auth.Session, label string, dialog string, outline bool, enabled bool, tooltipID string, tooltip string) {
+	if enabled {
+		@home.Action(session, label, dialog, outline)
+	} else {
+		@c.Tooltip(c.TooltipProps{ID: tooltipID, Content: tooltip, Position: c.TooltipAbove}) {
+			// pointer-events-none lets the wrapper span receive the hover a
+			// disabled button would otherwise swallow, so the tooltip shows.
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"disabled": true, "class": "pointer-events-none", "aria-describedby": tooltipID}}) {
+				@c.Icon("plus")
+				<span>{ label }</span>
+			}
+		}
+	}
+}
+
+templ CertRows(rows []CertRow, session auth.Session) {
+	<div class="grid gap-3">
+		for _, row := range rows {
+			@CertificateRow(row, session)
+		}
+	</div>
+}
+
+templ CertificateRow(row CertRow, session auth.Session) {
+	<div data-row class="protocol flex items-start justify-between gap-4 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&_h4]:m-0 [&_h4]:text-sm [&_h4]:font-bold [&_p]:mt-1 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground ca-row cursor-pointer transition-[background-color,border-color] duration-150 hover:border-[color-mix(in_oklch,var(--color-primary)_45%,var(--color-border))] hover:bg-[color-mix(in_oklch,var(--color-primary)_6%,var(--color-muted))] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary" role="button" tabindex="0" data-dialog={ "cert-details-" + row.ID } data-script="on click call document.getElementById(my @data-dialog).showModal() end on keydown[key is 'Enter' or key is ' '] trigger click on me">
+		<div class="flex items-center gap-4">
+			<div class="channel-icon grid size-10 place-items-center rounded-lg bg-[color-mix(in_oklch,var(--color-primary)_15%,transparent)] text-primary">
+				@c.Icon("file-key")
+			</div>
+			<div><h4>{ row.CN }</h4><p>{ row.CAName } · { certProfileLabel(row.Profile) } · Expires { row.Expires }</p></div>
+		</div>
+		<div class="button-row flex items-center gap-2 max-md:flex-col max-md:items-stretch [&>.btn]:max-md:w-full">
+			@c.Pill(c.PillProps{Tone: certStatusTone(row.Status)}) {
+				{ row.Status }
+			}
+			<span class="row-chevron grid place-items-center text-muted-foreground">
+				@c.Icon("chevron-right")
+			</span>
+		</div>
+	</div>
+}
+
+templ CertDialog(row CertRow, session auth.Session) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": "cert-details-" + row.ID, "style": "--dialog-w:40rem"}}) {
+		@c.DialogHeader(c.DialogHeaderProps{Title: row.CN, Description: "Certificate details"})
+		@c.DialogBody(templ.Attributes{"class": "grid gap-4 two grid-cols-2 max-md:grid-cols-1"}) {
+			@c.Info("Type", certProfileLabel(row.Profile))
+			@c.Info("Status", row.Status)
+			@c.Info("Issuing CA", row.CAName)
+			@c.Info("Serial", row.Serial)
+			@c.Info("Issued", row.IssuedAt)
+			@c.Info("Expires", row.Expires)
+			<div class="col-span-full">
+				@c.Info("Subject", row.Subject)
+			</div>
+			if row.SANs != "" {
+				<div class="col-span-full">
+					@c.Info("Subject alternative names", row.SANs)
+				</div>
+			}
+			if row.EKUs != "" {
+				<div class="col-span-full">
+					@c.Info("Extended key usages", row.EKUs)
+				</div>
+			}
+			if row.Revocable && session.CanManageCertificates() {
+				<form method="post" action={ templ.SafeURL("/certificates/" + row.ID + "/revoke") } hx-post={ "/certificates/" + row.ID + "/revoke" } class="col-span-full flex items-end gap-3 border-t border-border pt-4 max-md:flex-col max-md:items-stretch">
+					@c.Field(c.FieldProps{Label: "Revocation reason", Attrs: templ.Attributes{"class": "flex-1"}}) {
+						@c.Select(templ.Attributes{"name": "reason", "required": true}) {
+							<option value="unspecified" selected>Unspecified</option>
+							<option value="key_compromise">Key compromise</option>
+							<option value="superseded">Superseded</option>
+							<option value="cessation_of_operation">Cessation of operation</option>
+							<option value="affiliation_changed">Affiliation changed</option>
+						}
+					}
+					@c.Button(c.ButtonProps{Variant: c.ButtonDestructive}) {
+						@c.Icon("shield-off")
+						<span>Revoke</span>
+					}
+				</form>
+				<p class="col-span-full mt-0 text-sm text-muted-foreground">Revoking is permanent. The certificate stops appearing as active immediately; clients stop trusting it once your revocation lists pick it up.</p>
+			}
+		}
+		@c.DialogActions(nil) {
+			@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+				Close
+			}
+			@c.ButtonLink(c.ButtonLinkProps{Href: "/certificates/" + row.ID + "/download", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+				@c.Icon("download")
+				<span>Download certificate</span>
+			}
+		}
+	}
+}
+
+templ IssueForm(id string, title string, copy string, profile string, cas []IssuerOption) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": id}}) {
+		<form method="post" action="/certificates/issue" hx-post="/certificates/issue" hx-target={ "#" + id + "-result" }>
+			<input type="hidden" name="profile" value={ profile }/>
+			@c.DialogHeader(c.DialogHeaderProps{Title: title, Description: copy})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<div id={ id + "-fields" } class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Issuing CA"}) {
+						@c.Select(templ.Attributes{"name": "ca_id", "required": true, "data-script": ekuGroupToggle()}) {
+							for _, ca := range cas {
+								<option value={ ca.ID }>{ ca.Name }</option>
+							}
+						}
+					}
+					@LeafSubjectFields(profile)
+					@c.Field(c.FieldProps{Label: "DNS names (SAN, comma-separated)"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_dns", "placeholder": "vpn.example.com, api.example.com"}})
+					}
+					<div class="grid gap-4 two grid-cols-2 max-md:grid-cols-1">
+						@c.Field(c.FieldProps{Label: "IP addresses (SAN, comma-separated)"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_ip", "placeholder": "10.0.0.12"}})
+						}
+						@c.Field(c.FieldProps{Label: "Email addresses (SAN, comma-separated)"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "san_email", "placeholder": "jane.doe@example.com"}})
+						}
+					</div>
+					<div class="grid gap-4 two grid-cols-2 max-md:grid-cols-1">
+						@LeafAlgorithmSelect()
+						@c.Field(c.FieldProps{Label: "Validity (days)"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "days", "type": "number", "required": true, "min": "1", "max": "3650", "value": "365"}})
+						}
+					</div>
+					for i, ca := range cas {
+						@LeafEKUGroup(ca, requiredEKU(profile), i == 0)
+					}
+				</div>
+				<div id={ id + "-result" } class="muted text-sm text-muted-foreground"></div>
+			}
+			@c.DialogActions(templ.Attributes{"id": id + "-actions"}) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Issue certificate
+				}
+			}
+		</form>
+	}
+}
+
+templ CSRForm(id string, cas []IssuerOption) {
+	@c.Dialog(c.DialogProps{Attrs: templ.Attributes{"id": id}}) {
+		<form method="post" action="/certificates/csr" hx-post="/certificates/csr" hx-target={ "#" + id + "-result" }>
+			@c.DialogHeader(c.DialogHeaderProps{Title: "Sign a Certificate Signing Request", Description: "Paste a PEM-encoded CSR. SimpleSCEP validates it and issues a certificate with the subject and SANs it requests."})
+			@c.DialogBody(templ.Attributes{"class": "grid gap-4"}) {
+				<p class="m-0 text-sm text-muted-foreground">
+					<a href={ templ.SafeURL(layout.DocsCertificatesURL) } target="_blank" rel="noopener" class="underline underline-offset-2">Read the certificate issuance guide</a>
+				</p>
+				<div id={ id + "-fields" } class="grid gap-4">
+					@c.Field(c.FieldProps{Label: "Issuing CA"}) {
+						@c.Select(templ.Attributes{"name": "ca_id", "required": true, "data-script": ekuGroupToggle()}) {
+							for _, ca := range cas {
+								<option value={ ca.ID }>{ ca.Name }</option>
+							}
+						}
+					}
+					@c.Field(c.FieldProps{Label: "Certificate signing request (PEM)"}) {
+						@c.Textarea(templ.Attributes{"name": "csr", "required": true, "rows": "8", "class": "font-mono text-xs", "placeholder": "-----BEGIN CERTIFICATE REQUEST-----"})
+					}
+					@c.Field(c.FieldProps{Label: "Validity (days)"}) {
+						@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "days", "type": "number", "required": true, "min": "1", "max": "3650", "value": "365"}})
+					}
+					for i, ca := range cas {
+						@LeafEKUGroup(ca, "", i == 0)
+					}
+				</div>
+				<div id={ id + "-result" } class="muted text-sm text-muted-foreground"></div>
+			}
+			@c.DialogActions(templ.Attributes{"id": id + "-actions"}) {
+				@c.Button(c.ButtonProps{Variant: c.ButtonGhost, Attrs: templ.Attributes{"type": "button", "data-close": true, "data-script": "on click call (the closest <dialog/>).close()"}}) {
+					Cancel
+				}
+				@c.Button(c.ButtonProps{}) {
+					Sign CSR
+				}
+			}
+		</form>
+	}
+}
+
+// LeafEKUGroup renders the EKU selection for one issuing CA, constrained to
+// that CA's profile. The flow's required usage (server_auth / client_auth) is
+// shown checked and disabled — the service always includes it. Only the group
+// for the selected CA is visible and enabled; hidden groups have their inputs
+// disabled so they never submit.
+templ LeafEKUGroup(ca IssuerOption, required string, active bool) {
+	<fieldset data-eku-group={ ca.ID } class="grid gap-2" hidden?={ !active }>
+		<legend class="text-sm font-medium">Extended Key Usages (EKU)</legend>
+		if required == "" {
+			<p class="text-sm text-muted-foreground">Select which of this CA's usages to apply. Leave all unchecked to apply the CA's full profile.</p>
+		} else {
+			<p class="text-sm text-muted-foreground">Limited to this issuing CA's profile. { ekuDisplayLabel(required) } is always included.</p>
+		}
+		<div class="grid gap-2 two grid-cols-2 max-md:grid-cols-1">
+			for _, opt := range ekuChoices(ca.EKUs) {
+				<label class="flex items-center gap-2 text-sm">
+					if opt.Token == required {
+						<input type="checkbox" checked disabled/>
+						{ opt.Label } <span class="text-muted-foreground">(always included)</span>
+					} else {
+						if active {
+							<input type="checkbox" name="eku" value={ opt.Token } data-eku-input/>
+						} else {
+							<input type="checkbox" name="eku" value={ opt.Token } data-eku-input disabled/>
+						}
+						{ opt.Label }
+					}
+				</label>
+			}
+		</div>
+	</fieldset>
+}
+
+templ LeafSubjectFields(profile string) {
+	@c.Field(c.FieldProps{Label: "Common name (CN)"}) {
+		@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "cn", "required": true, "maxlength": "128", "placeholder": leafCNPlaceholder(profile)}})
+	}
+	<div class="grid gap-4 two grid-cols-2 max-md:grid-cols-1">
+		@c.Field(c.FieldProps{Label: "Organization (O)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "o", "maxlength": "128", "placeholder": "Acme Inc"}})
+		}
+		@c.Field(c.FieldProps{Label: "Organizational unit (OU)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "ou", "maxlength": "128", "placeholder": "IT"}})
+		}
+		@c.Field(c.FieldProps{Label: "Country (C)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "c", "minlength": "2", "maxlength": "2", "pattern": "[A-Za-z]{2}", "title": "Two-letter country code", "placeholder": "US"}})
+		}
+		@c.Field(c.FieldProps{Label: "State / Province (ST)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "st", "maxlength": "128", "placeholder": "California"}})
+		}
+		@c.Field(c.FieldProps{Label: "Locality (L)"}) {
+			@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "l", "maxlength": "128", "placeholder": "San Francisco"}})
+		}
+	</div>
+}
+
+// LeafAlgorithmSelect offers leaf key algorithms; these tokens are distinct
+// from the KMS ones in AlgorithmSelect because leaf keys are generated
+// in-process and returned to the requester.
+templ LeafAlgorithmSelect() {
+	@c.Field(c.FieldProps{Label: "Key algorithm"}) {
+		@c.Select(templ.Attributes{"name": "algorithm", "required": true}) {
+			<option value="EC_P256" selected>ECDSA P-256 (recommended)</option>
+			<option value="EC_P384">ECDSA P-384</option>
+			<option value="RSA_2048">RSA 2048</option>
+			<option value="RSA_3072">RSA 3072</option>
+			<option value="RSA_4096">RSA 4096</option>
+		}
+	}
+}
+
+// GeneratedCertResult is the one-time issuance result swapped into the form's
+// result target. It carries the private key: this response is the only place
+// the key ever exists, so it must be saved before leaving the page.
+templ GeneratedCertResult(dialogID string, cn string, keyPEM string, certPEM string, chainPEM string) {
+	<div class="grid gap-4" data-script={ "init add @hidden to #" + dialogID + "-fields then add @hidden to #" + dialogID + "-actions" }>
+		<div class="flex items-start gap-3 rounded-xl border border-[color-mix(in_oklch,var(--color-warning)_50%,transparent)] bg-[color-mix(in_oklch,var(--color-warning)_10%,transparent)] p-4 [&>span]:text-warning">
+			<span>
+				@c.Icon("circle-alert")
+			</span>
+			<div class="text-sm"><strong>Save the private key now.</strong> It is shown only this once and is never stored by SimpleSCEP. If you lose it, revoke this certificate and issue a new one.</div>
+		</div>
+		@PEMBlock("Private key", keyPEM, certFileBase(cn)+"-key.pem")
+		@PEMBlock("Certificate", certPEM, certFileBase(cn)+".pem")
+		if chainPEM != "" {
+			@PEMBlock("CA chain", chainPEM, certFileBase(cn)+"-chain.pem")
+		}
+		<div class="flex justify-end">
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '/certificates'"}}) {
+				Done
+			}
+		</div>
+	</div>
+}
+
+// CSRCertResult is the signing result for the CSR flow — public material only.
+templ CSRCertResult(dialogID string, cn string, certID string, certPEM string, chainPEM string) {
+	<div class="grid gap-4" data-script={ "init add @hidden to #" + dialogID + "-fields then add @hidden to #" + dialogID + "-actions" }>
+		@PEMBlock("Certificate", certPEM, certFileBase(cn)+".pem")
+		if chainPEM != "" {
+			@PEMBlock("CA chain", chainPEM, certFileBase(cn)+"-chain.pem")
+		}
+		<div class="flex justify-end gap-2">
+			@c.ButtonLink(c.ButtonLinkProps{Href: "/certificates/" + certID + "/download", ButtonProps: c.ButtonProps{Variant: c.ButtonOutline}}) {
+				@c.Icon("download")
+				<span>Download with chain</span>
+			}
+			@c.Button(c.ButtonProps{Attrs: templ.Attributes{"type": "button", "data-script": "on click go to url '/certificates'"}}) {
+				Done
+			}
+		</div>
+	</div>
+}
+
+templ PEMBlock(label string, pemData string, filename string) {
+	<div class="grid gap-2">
+		<div class="flex items-center justify-between gap-2">
+			<span class="text-sm font-medium">{ label }</span>
+			<div class="flex items-center gap-2">
+				@c.Button(c.ButtonProps{Variant: c.ButtonOutline, Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "button", "data-pem": pemData, "data-script": "on click call navigator.clipboard.writeText(my @data-pem) then call toast('success', 'Certificate copied to clipboard')"}}) {
+					@c.Icon("copy")
+					<span>Copy</span>
+				}
+				<a download={ filename } href={ dataPEMURL(pemData) } class="btn inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md border text-sm font-medium transition-[filter,box-shadow] duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary border-border bg-background text-foreground shadow-[0_1px_2px_#0003] hover:brightness-[.92] h-8 px-3 text-xs">
+					@c.Icon("download")
+					<span>Download</span>
+				</a>
+			</div>
+		</div>
+		<pre class="m-0 max-h-44 overflow-auto rounded-lg border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-3 text-xs">{ pemData }</pre>
+	</div>
+}
+
+// ekuGroupToggle shows only the selected CA's EKU checkbox group. Hidden
+// groups also get their inputs disabled — a hidden checked checkbox would
+// still submit.
+func ekuGroupToggle() string {
+	return "on change for g in <fieldset[data-eku-group]/> in the closest <form/> if g's @data-eku-group is my value then remove @hidden from g then remove @disabled from <input[data-eku-input]/> in g else add @hidden to g then add @disabled to <input[data-eku-input]/> in g end end"
+}
+
+// dataPEMURL embeds PEM in a data: URI so one-time material downloads without
+// another round trip to the server.
+func dataPEMURL(pemData string) templ.SafeURL {
+	return templ.SafeURL("data:application/x-pem-file;base64," + base64.StdEncoding.EncodeToString([]byte(pemData)))
+}
+
+// certFileBase derives a safe download filename base from a common name.
+func certFileBase(cn string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(cn) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '_' || r == '.':
+			b.WriteRune('-')
+		}
+	}
+	base := strings.Trim(b.String(), "-")
+	if base == "" {
+		return "certificate"
+	}
+	return base
+}
+
+func leafCNPlaceholder(profile string) string {
+	if profile == "server" {
+		return "vpn.example.com"
+	}
+	return "jane.doe@example.com"
+}
+
+func requiredEKU(profile string) string {
+	if profile == "server" {
+		return "server_auth"
+	}
+	return "client_auth"
+}
+
+func ekuDisplayLabel(token string) string {
+	for _, opt := range namedEKUOptions {
+		if opt.Token == token {
+			return opt.Label
+		}
+	}
+	return token
+}
+
+func certProfileLabel(profile string) string {
+	switch profile {
+	case "server":
+		return "Server"
+	case "client":
+		return "Client"
+	case "scep":
+		return "SCEP"
+	case "acme":
+		return "ACME"
+	case "est":
+		return "EST"
+	case "infrastructure":
+		return "SimpleSCEP infrastructure"
+	default:
+		return "CSR-based"
+	}
+}
+
+func certStatusTone(status string) c.Tone {
+	switch status {
+	case "issued":
+		return c.ToneSuccess
+	case "expired":
+		return c.ToneWarning
+	default:
+		return c.ToneNeutral
+	}
+}
+
+// filterCertRows selects the rows belonging on one tab.
+//
+// Server and Client / Device classify by what a certificate is for — its
+// extended key usages — not by the form that was filled in to get it. A device
+// certificate enrolled over SCEP arrives as a CSR, so classifying by the
+// creation flow alone left the Client / Device tab empty for organizations
+// whose device certificates all came from an MDM. CSR-based stays a statement
+// about origin and excludes certificates enrolled through SCEP.
+//
+// Infrastructure certificates are SimpleSCEP's own and belong on none of the
+// three; they remain visible under All.
+func filterCertRows(rows []CertRow, tab string) []CertRow {
+	var out []CertRow
+	for _, row := range rows {
+		if certRowOnTab(row, tab) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func certRowOnTab(row CertRow, tab string) bool {
+	if row.Profile == "infrastructure" {
+		return false
+	}
+	switch tab {
+	case "server":
+		return row.Profile == "server" || hasEKU(row.EKUs, "server_auth")
+	case "client":
+		return row.Profile == "client" || hasEKU(row.EKUs, "client_auth")
+	case "csr":
+		return row.Profile == "csr"
+	}
+	return true
+}
+
+func hasEKU(csv, token string) bool {
+	for t := range strings.SplitSeq(csv, ",") {
+		if strings.TrimSpace(t) == token {
+			return true
+		}
+	}
+	return false
+}
+
+func certificateHeaderCopy(session auth.Session, data CertificatesData) string {
+	return fmt.Sprintf("%d certificate identit%s in use. Renewals and repeat enrollments of a subject you already cover do not count again.",
+		data.Identities, pluralize(data.Identities))
+}
+
+func pluralize(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
+func certificateEmptyTitle(session auth.Session, data CertificatesData) string {
+	if len(data.CSRCAs) == 0 {
+		return "Create an Issuing CA first"
+	}
+	return "No certificates yet"
+}
+
+func certificateEmptyCopy(session auth.Session, data CertificatesData) string {
+	if len(data.CSRCAs) == 0 {
+		return "Certificates are signed by an issuing CA. Set one up and you can issue server, client, and CSR-based certificates in seconds."
+	}
+	return "Issue a server or client certificate, or sign a CSR, using the buttons above."
+}

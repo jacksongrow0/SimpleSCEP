@@ -1,0 +1,28 @@
+package components
+
+templ Metric(props MetricProps) {
+	@MetricSlot(props) {
+		{ props.Value }
+	}
+}
+
+// MetricSlot is Metric with the headline value supplied as markup rather than a
+// string, for values that are themselves components — a LocalTime, say, which
+// has to reach the browser as an element to be re-rendered in its timezone.
+// props.Value is ignored.
+templ MetricSlot(props MetricProps) {
+	@Card(CardProps{Attrs: mergeAttrs("metric p-0 [&_.card-head]:flex-row [&_.card-head]:items-center [&_.card-head]:justify-between [&_.card-head]:pb-2 [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted-foreground", props.Attrs)}) {
+		<div class="card-head flex items-center justify-between p-6 pb-2">
+			<span class="text-xs uppercase tracking-[.1em] text-muted-foreground">{ props.Label }</span>
+			<span class="text-primary">
+				@Icon(props.Icon)
+			</span>
+		</div>
+		@CardBody(nil) {
+			<div class="text-[30px] leading-[1.15] font-black">{ children... }</div>
+			if props.Meta != "" {
+				<small>{ props.Meta }</small>
+			}
+		}
+	}
+}

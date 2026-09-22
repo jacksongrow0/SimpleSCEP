@@ -1,0 +1,145 @@
+package home
+
+import (
+	"strconv"
+
+	"github.com/jacksongrow0/SimpleSCEP/internal/auth"
+	c "github.com/jacksongrow0/SimpleSCEP/view/components"
+	"github.com/jacksongrow0/SimpleSCEP/view/layout"
+)
+
+// Posture is the compliance card's content, and every field of it is measured
+// rather than typed.
+//
+// The card used to be five hardcoded strings, and two of them were false. It
+// asserted "HSM attestation: FIPS 140-2 Level 3" regardless of actual keys —
+// so a deployment on software keys, or on in-memory development keys,
+// told its customers in a panel headed "Audit & compliance" that their CA was in
+// a FIPS 140-2 Level 3 module. It also asserted 365-day audit retention, which no
+// job anywhere implements. A false attestation in a PKI product is not a copy
+// problem.
+type Posture struct {
+	// KeyProtection is a provider summary; each CA row shows its stored posture.
+	KeyProtection string
+	// Region is the provider location when configuration exposes it, or empty —
+	// in which case the row is not rendered at all rather than guessed.
+	Region string
+	// CRLRefresh is the real republication interval.
+	CRLRefresh string
+}
+
+templ Organization(session auth.Session, org auth.Organization, posture Posture) {
+	@layout.App("Organization", "organization", shellSession(session)) {
+		<div class="stack flex flex-col gap-6">
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Organization details", Description: createdLabel(org), Icon: "building-2"})
+				@c.CardBody(nil) {
+					<form class="grid gap-4" method="post" action="/settings/organization" hx-post="/settings/organization">
+						@c.Field(c.FieldProps{Label: "Organization name"}) {
+							@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "name", "value": org.Name, "required": true}})
+						}
+						<div class="between flex items-center justify-between gap-3 justify-end">
+							@c.Button(c.ButtonProps{}) {
+								Save changes
+							}
+						</div>
+					</form>
+				}
+			}
+			// Here rather than in the account settings dialog, where it used to be.
+			// The preference is the organization's — one window, one switch, and
+			// the mail goes to every administrator — so a member reading it in a
+			// dialog headed with their own name and role had every reason to think
+			// they were turning off their own email.
+			//
+			// It also could not be read correctly from there. The dialog is on the
+			// application shell, which is handed a layout.Session assembled
+			// per-package, and view/pki built one without these two fields — so on
+			// every certificate authority page the switch rendered off no matter
+			// what was stored. This page holds the whole auth.Session, so there is
+			// nothing to keep in step.
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Notifications", Icon: "clock",
+					Description: "What this organization emails its administrators about."})
+				@c.CardBody(nil) {
+					// Only administrators may change it, and this page is only
+					// linked for them — but it is not refused to anyone else, so a
+					// member who reaches it is told the current state rather than
+					// given a control the server would reject.
+					<form id="preferences-form" method="post" action="/settings/notifications" hx-post="/settings/notifications" class="grid gap-4">
+						<div class="protocol flex items-start justify-between gap-4 rounded-xl border border-border bg-[color-mix(in_oklch,var(--color-muted)_30%,transparent)] p-4 [&_h4]:m-0 [&_h4]:text-sm [&_h4]:font-bold [&_p]:mt-1 [&_p]:mb-0 [&_p]:text-sm [&_p]:text-muted-foreground">
+							<div>
+								<h4>Certificate expiry alerts</h4>
+								<p>Email every administrator when a certificate is within { expiryWindow(session) } days of expiry.</p>
+							</div>
+							if session.IsAdmin() {
+								@c.SwitchInput(templ.Attributes{"aria-label": "Certificate expiry alerts",
+									"name": "expiry_alerts", "value": "true", "checked": session.ExpiryAlertsEnabled})
+							} else {
+								@c.Pill(c.PillProps{Tone: enabledTone(session.ExpiryAlertsEnabled)}) {
+									{ enabledLabel(session.ExpiryAlertsEnabled) }
+								}
+							}
+						</div>
+						if session.IsAdmin() {
+							@c.Field(c.FieldProps{Label: "Warn this many days ahead", Attrs: templ.Attributes{"class": "sm:max-w-[16rem]"}}) {
+								@c.Input(c.InputProps{Attrs: templ.Attributes{"name": "expiry_alert_days",
+									"type": "number", "min": "1", "max": "365",
+									"value": expiryWindow(session)}})
+							}
+							@c.Button(c.ButtonProps{Size: c.ButtonSmall, Attrs: templ.Attributes{"type": "submit", "class": "justify-self-start"}}) {
+								Save preferences
+							}
+						}
+					</form>
+				}
+			}
+			@c.Card(c.CardProps{}) {
+				@c.CardHeader(c.CardHeaderProps{Title: "Audit & compliance", Description: "Compliance posture for your PKI deployment."})
+				@c.CardBody(templ.Attributes{"class": "grid gap-4 three grid-cols-3 max-md:grid-cols-1"}) {
+					if posture.Region != "" {
+						@c.Info("Key region", posture.Region)
+					}
+					@c.Info("CA key provider", posture.KeyProtection)
+					@c.Info("CRL publication", posture.CRLRefresh)
+					@c.Info("OCSP endpoint", "Enabled")
+					@c.Info("Audit log", "Append-only, retained indefinitely")
+				}
+			}
+		</div>
+	}
+}
+
+// expiryWindow renders the configured warning window, falling back to the
+// schema default so the copy reads correctly for a session assembled before the
+// column existed.
+func expiryWindow(session auth.Session) string {
+	if session.ExpiryAlertDays <= 0 {
+		return "30"
+	}
+	return strconv.Itoa(session.ExpiryAlertDays)
+}
+
+func enabledLabel(on bool) string {
+	if on {
+		return "Enabled"
+	}
+	return "Off"
+}
+
+func enabledTone(on bool) c.Tone {
+	if on {
+		return c.ToneSuccess
+	}
+	return c.ToneNeutral
+}
+
+// createdLabel renders the organization's own creation date. It was a constant —
+// "Created July 8, 2026" — shown identically to every customer, because
+// auth.Organization had no such field to read.
+func createdLabel(org auth.Organization) string {
+	if org.CreatedAt.IsZero() {
+		return "Organization settings and compliance posture"
+	}
+	return "Created " + org.CreatedAt.Format("January 2, 2006")
+}
