@@ -15,7 +15,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/pquerna/otp v1.5.0
 	github.com/resend/resend-go/v2 v2.28.0
-	github.com/smallstep/pkcs7 v0.2.1
+	github.com/smallstep/pkcs7 v0.2.3
 	github.com/smallstep/scep v0.0.0-20241223071629-a37a330173bc
 	golang.org/x/crypto v0.55.0
 	google.golang.org/api v0.287.1
