@@ -20,7 +20,7 @@ COPY view ./view
 RUN npm run assets:build
 
 # Pin both the Go patch release and the multi-platform image digest, the same way.
-FROM golang:1.25.14-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
+FROM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
