@@ -44,8 +44,7 @@ See the detailed [SCEP](docs/scep.md), [ACME](docs/acme.md), [EST](docs/est.md),
 
 ## Supported components
 
-- Go 1.25.5
-- Node.js 22.23.2 and npm
+- Go and Node.js versions pinned in [Dockerfile](Dockerfile), plus npm (CI uses the same versions)
 - PostgreSQL 17
 - Google Cloud KMS or Azure Key Vault for production key storage
 - Resend for production mail delivery
