@@ -8,6 +8,7 @@ permissions:
   contents: write
   packages: write
   id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -43,6 +44,8 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # Artifact storage records require an organization-owned repository.
+          create-storage-record: false
       - name: Write release checksums
         run: |
           echo "${{ steps.build.outputs.digest }}  $IMAGE:${{ github.ref_name }}" > container-digest.txt
