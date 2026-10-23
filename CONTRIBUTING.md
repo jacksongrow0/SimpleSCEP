@@ -4,7 +4,7 @@ Thank you for improving SimpleSCEP. Use an issue to discuss significant behavior
 
 ## Development
 
-Install Go 1.25.5, Node.js 22.23.2, npm, and PostgreSQL 17. Then run:
+Install the Go and Node.js versions pinned in [Dockerfile](Dockerfile), npm, and PostgreSQL 17. CI reads its tool versions from the same file. Then run:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
