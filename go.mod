@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	cloud.google.com/go/kms v1.33.0
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.2
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
 	github.com/a-h/templ v0.3.1001
@@ -15,7 +15,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/pquerna/otp v1.5.0
 	github.com/resend/resend-go/v2 v2.28.0
-	github.com/smallstep/pkcs7 v0.2.1
+	github.com/smallstep/pkcs7 v0.2.3
 	github.com/smallstep/scep v0.0.0-20241223071629-a37a330173bc
 	golang.org/x/crypto v0.57.0
 	google.golang.org/api v0.287.1
