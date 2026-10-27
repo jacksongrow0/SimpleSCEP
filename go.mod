@@ -3,7 +3,7 @@ module github.com/jacksongrow0/SimpleSCEP
 go 1.26.0
 
 require (
-	cloud.google.com/go/kms v1.35.0
+	cloud.google.com/go/kms v1.36.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.2
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
