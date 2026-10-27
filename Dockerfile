@@ -5,7 +5,7 @@
 #
 # Pin both the Node patch release and the multi-platform image digest. Dependency
 # automation should update these together after the replacement image is tested.
-FROM node:26.12.0-alpine@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS assets
+FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS assets
 
 WORKDIR /src
 COPY package.json package-lock.json ./
