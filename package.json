@@ -8,7 +8,7 @@
     "dev:server": "npm run css:build && npm run js:build && (npm run css:watch & go run ./cmd serve)"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.3.3",
+    "@tailwindcss/cli": "^4.3.5",
     "htmx.org": "2.0.11",
     "hyperscript.org": "0.9.93",
     "tailwindcss": "^4.3.3"
